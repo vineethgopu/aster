@@ -75,8 +75,6 @@ class CsvLogManager:
                     "ts_unix_ms", "ts_dt_utc", "symbol",
                     "k1_start_ms", "k1_close_ms", "k1_open", "k1_high", "k1_low", "k1_close",
                     "k1_base_vol", "k1_quote_vol", "k1_trades", "k1_closed",
-                    "k10_start_ms", "k10_close_ms", "k10_open", "k10_high", "k10_low", "k10_close",
-                    "k10_base_vol", "k10_quote_vol", "k10_trades",
                 ],
             ),
             bbo=CsvAppender(
@@ -84,6 +82,7 @@ class CsvLogManager:
                 fieldnames=[
                     "ts_unix_ms", "ts_dt_utc", "symbol",
                     "bid_px", "bid_qty", "ask_px", "ask_qty", "spread", "mid",
+                    "imbalance", "weighted_mid",
                 ],
             ),
             funding=CsvAppender(
@@ -139,7 +138,6 @@ class CsvLogManager:
             # ----- Bars -----
             bars = snap.get("bars") or {}
             k1 = (bars.get("kline_1m") or {})
-            k10 = (bars.get("bar_10m") or {})
 
             bars_rows.append({
                 "ts_unix_ms": ts_ms, "ts_dt_utc": ts_dt, "symbol": sym,
@@ -153,29 +151,29 @@ class CsvLogManager:
                 "k1_quote_vol": k1.get("quote_vol"),
                 "k1_trades": k1.get("num_trades"),
                 "k1_closed": k1.get("is_closed"),
-                "k10_start_ms": k10.get("start_time_ms"),
-                "k10_close_ms": k10.get("close_time_ms"),
-                "k10_open": k10.get("open"),
-                "k10_high": k10.get("high"),
-                "k10_low": k10.get("low"),
-                "k10_close": k10.get("close"),
-                "k10_base_vol": k10.get("base_vol"),
-                "k10_quote_vol": k10.get("quote_vol"),
-                "k10_trades": k10.get("num_trades"),
             })
 
             # ----- BBO -----
             bbo = snap.get("bbo") or {}
             bid_px = bbo.get("bid_px")
             ask_px = bbo.get("ask_px")
-            spread = (ask_px - bid_px) if isinstance(bid_px, (int, float)) and isinstance(ask_px, (int, float)) else None
-            mid = ((ask_px + bid_px) / 2.0) if spread is not None else None
+            bid_qx = bbo.get("bid_qty") 
+            ask_qx = bbo.get("ask_qty")
 
+            spread, mid, imbalance, weighted_mid = tuple([None] * 4)
+            if isinstance(bid_px, (int, float)) and isinstance(ask_px, (int, float)):
+                spread = (ask_px - bid_px)
+                mid = ((ask_px + bid_px) / 2.0)
+                if isinstance(bid_qx, (int, float)) and isinstance(ask_qx, (int, float)):
+                    imbalance = (bid_qx - ask_qx) / (bid_qx + ask_qx) 
+                    weighted_mid = (bid_qx * ask_px + ask_qx * bid_px) / (ask_qx + bid_qx)
+            
             bbo_rows.append({
                 "ts_unix_ms": ts_ms, "ts_dt_utc": ts_dt, "symbol": sym,
-                "bid_px": bid_px, "bid_qty": bbo.get("bid_qty"),
-                "ask_px": ask_px, "ask_qty": bbo.get("ask_qty"),
-                "spread": spread, "mid": mid,
+                "bid_px": bid_px, "bid_qty": bid_qx,
+                "ask_px": ask_px, "ask_qty": ask_qx,
+                "spread": spread, "mid": mid, "imbalance" : imbalance, 
+                "weighted_mid" : weighted_mid,
             })
 
             # ----- Funding / Mark -----

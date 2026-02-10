@@ -332,7 +332,8 @@ class AsterClient:
                 # write 5 CSV rows per symbol per second
                 self.logger.write_second(ts, symbol_rows)
                 self.n_poll_snapshots += 1
-                print(self.n_poll_snapshots)
+                if self.n_poll_snapshots % 60 == 0:
+                    print(self.n_poll_snapshots)
 
                 time.sleep(self.poll_seconds)
 
