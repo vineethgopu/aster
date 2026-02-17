@@ -139,12 +139,14 @@ Flow:
    - run strategy on closed 1m bars
    - if signal triggered and no open local position:
      - compute TP/SL/trailing params
-     - compute filter-compliant entry price and order qty from `order_notional`
+     - compute order qty from `order_notional`
      - submit entry
      - arm exits
    - if position exists:
      - check if flat on exchange, cleanup siblings
+     - do not re-enter position
      - run margin kill check
+   - after exit: complete cooldown period before entry signal is functional
 
 ## Backtest Modules
 
