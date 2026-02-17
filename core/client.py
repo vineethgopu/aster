@@ -30,6 +30,20 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _to_float(v: Any) -> Optional[float]:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_int(v: Any) -> Optional[int]:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass
 class BBO:
     symbol: str
@@ -95,6 +109,7 @@ class AsterClient:
         self,
         symbols: List[str],
         log_dir: str = "./logs",
+        delete_logs: bool = False,
         rest_key: Optional[str] = None,
         rest_secret: Optional[str] = None,
         stream_url: str = WS_STREAM_URL,
@@ -105,10 +120,11 @@ class AsterClient:
 
         self.rest = AsterRestClient(key=rest_key, secret=rest_secret)
         self.ws = AsterWebsocketClient(stream_url=stream_url)
-        self.logger = CsvLogManager(log_dir=log_dir)
+        self.logger = CsvLogManager(log_dir=log_dir, delete_logs=delete_logs)
 
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
+        self._intentional_shutdown = False
 
         # latest caches
         self.latest_bbo: Dict[str, BBO] = {}
@@ -136,6 +152,159 @@ class AsterClient:
             s["depth5"] = self.rest.depth(sym, limit=L2_LEVELS)
             out["symbols"][sym] = s
         return out
+
+    def _seed_from_rest_snapshot(self, startup: Dict[str, Any]) -> None:
+        ts_ms = _to_int(startup.get("ts_ms")) or _now_ms()
+        symbols_data = startup.get("symbols") or {}
+
+        with self._lock:
+            for sym in self.symbols:
+                payload = symbols_data.get(sym) or {}
+
+                bt = payload.get("bookTicker")
+                if isinstance(bt, dict):
+                    bid_px = _to_float(bt.get("bidPrice", bt.get("b")))
+                    bid_qty = _to_float(bt.get("bidQty", bt.get("B")))
+                    ask_px = _to_float(bt.get("askPrice", bt.get("a")))
+                    ask_qty = _to_float(bt.get("askQty", bt.get("A")))
+                    if None not in (bid_px, bid_qty, ask_px, ask_qty):
+                        ev_ms = _to_int(bt.get("time", bt.get("E"))) or ts_ms
+                        self.latest_bbo[sym] = BBO(
+                            symbol=sym,
+                            event_time_ms=ev_ms,
+                            bid_px=bid_px,
+                            bid_qty=bid_qty,
+                            ask_px=ask_px,
+                            ask_qty=ask_qty,
+                        )
+
+                mp = payload.get("markPrice")
+                if isinstance(mp, dict):
+                    mark_px = _to_float(mp.get("markPrice", mp.get("p")))
+                    index_px = _to_float(mp.get("indexPrice", mp.get("i")))
+                    funding_rate = _to_float(mp.get("lastFundingRate", mp.get("r")))
+                    next_ft = _to_int(mp.get("nextFundingTime", mp.get("T")))
+                    if None not in (mark_px, index_px, funding_rate, next_ft):
+                        ev_ms = _to_int(mp.get("time", mp.get("E"))) or ts_ms
+                        self.latest_funding[sym] = FundingInfo(
+                            symbol=sym,
+                            event_time_ms=ev_ms,
+                            mark_px=mark_px,
+                            index_px=index_px,
+                            funding_rate=funding_rate,
+                            next_funding_time_ms=next_ft,
+                        )
+
+                klines = payload.get("klines_1m")
+                if isinstance(klines, list) and klines:
+                    k_last = klines[-1]
+                    if isinstance(k_last, list) and len(k_last) >= 9:
+                        start_ms = _to_int(k_last[0])
+                        open_px = _to_float(k_last[1])
+                        high_px = _to_float(k_last[2])
+                        low_px = _to_float(k_last[3])
+                        close_px = _to_float(k_last[4])
+                        base_vol = _to_float(k_last[5])
+                        close_ms = _to_int(k_last[6])
+                        quote_vol = _to_float(k_last[7])
+                        n_trades = _to_int(k_last[8])
+                        if None not in (start_ms, open_px, high_px, low_px, close_px, base_vol, close_ms, quote_vol, n_trades):
+                            self.latest_kline_1m[sym] = Kline1m(
+                                symbol=sym,
+                                event_time_ms=ts_ms,
+                                start_time_ms=start_ms,
+                                close_time_ms=close_ms,
+                                interval=KLINE_INTERVAL_1M,
+                                open=open_px,
+                                high=high_px,
+                                low=low_px,
+                                close=close_px,
+                                base_vol=base_vol,
+                                quote_vol=quote_vol,
+                                num_trades=n_trades,
+                                is_closed=(_now_ms() >= close_ms),
+                            )
+                    elif isinstance(k_last, dict):
+                        start_ms = _to_int(k_last.get("openTime", k_last.get("t")))
+                        close_ms = _to_int(k_last.get("closeTime", k_last.get("T")))
+                        open_px = _to_float(k_last.get("open", k_last.get("o")))
+                        high_px = _to_float(k_last.get("high", k_last.get("h")))
+                        low_px = _to_float(k_last.get("low", k_last.get("l")))
+                        close_px = _to_float(k_last.get("close", k_last.get("c")))
+                        base_vol = _to_float(k_last.get("volume", k_last.get("v")))
+                        quote_vol = _to_float(k_last.get("quoteAssetVolume", k_last.get("q", 0.0)))
+                        n_trades = _to_int(k_last.get("numTrades", k_last.get("n", 0)))
+                        if None not in (start_ms, close_ms, open_px, high_px, low_px, close_px, base_vol, quote_vol, n_trades):
+                            self.latest_kline_1m[sym] = Kline1m(
+                                symbol=sym,
+                                event_time_ms=ts_ms,
+                                start_time_ms=start_ms,
+                                close_time_ms=close_ms,
+                                interval=KLINE_INTERVAL_1M,
+                                open=open_px,
+                                high=high_px,
+                                low=low_px,
+                                close=close_px,
+                                base_vol=base_vol,
+                                quote_vol=quote_vol,
+                                num_trades=n_trades,
+                                is_closed=(_now_ms() >= close_ms),
+                            )
+
+                trades = payload.get("aggTrades")
+                if isinstance(trades, list):
+                    parsed_trades: List[AggTrade] = []
+                    for t in trades:
+                        if not isinstance(t, dict):
+                            continue
+                        trade_ms = _to_int(t.get("T", t.get("time")))
+                        price = _to_float(t.get("p", t.get("price")))
+                        qty = _to_float(t.get("q", t.get("qty")))
+                        agg_id = _to_int(t.get("a", t.get("aggId", t.get("id"))))
+                        maker_flag = t.get("m", t.get("isBuyerMaker"))
+                        if None in (trade_ms, price, qty, agg_id) or maker_flag is None:
+                            continue
+                        parsed_trades.append(
+                            AggTrade(
+                                symbol=sym,
+                                event_time_ms=trade_ms,
+                                trade_time_ms=trade_ms,
+                                agg_id=agg_id,
+                                price=price,
+                                qty=qty,
+                                is_buyer_maker=bool(maker_flag),
+                            )
+                        )
+                    if parsed_trades:
+                        parsed_trades.sort(key=lambda x: x.trade_time_ms)
+                        self.recent_agg_trades[sym] = parsed_trades[-5000:]
+
+                depth = payload.get("depth5")
+                if isinstance(depth, dict):
+                    bids_raw = depth.get("bids", depth.get("b", []))
+                    asks_raw = depth.get("asks", depth.get("a", []))
+                    bids: List[Tuple[float, float]] = []
+                    asks: List[Tuple[float, float]] = []
+                    for level in bids_raw[:L2_LEVELS]:
+                        if isinstance(level, (list, tuple)) and len(level) >= 2:
+                            px = _to_float(level[0])
+                            qty = _to_float(level[1])
+                            if None not in (px, qty):
+                                bids.append((px, qty))
+                    for level in asks_raw[:L2_LEVELS]:
+                        if isinstance(level, (list, tuple)) and len(level) >= 2:
+                            px = _to_float(level[0])
+                            qty = _to_float(level[1])
+                            if None not in (px, qty):
+                                asks.append((px, qty))
+                    ev_ms = _to_int(depth.get("E", depth.get("T"))) or ts_ms
+                    if bids or asks:
+                        self.latest_l2[sym] = L2Depth(
+                            symbol=sym,
+                            event_time_ms=ev_ms,
+                            bids=bids,
+                            asks=asks,
+                        )
 
     # -------------------------
     # WS subscribe helpers
@@ -295,7 +464,27 @@ class AsterClient:
                         proto.sendClose(code=code, reason=reason)
         reactor.callFromThread(_do)
 
+    def _prepare_ws_for_shutdown(self) -> None:
+        # The upstream connector retries/logs on any disconnect. During our own
+        # teardown, disable reconnect callbacks to avoid false error noise.
+        for factory in getattr(self.ws, "factories", {}).values():
+            with contextlib.suppress(Exception):
+                factory.continueTrying = False
+            with contextlib.suppress(Exception):
+                factory.stopTrying()
+            with contextlib.suppress(Exception):
+                factory.clientConnectionLost = lambda connector, reason: None
+            with contextlib.suppress(Exception):
+                factory.clientConnectionFailed = lambda connector, reason: None
+
+            proto = getattr(factory, "protocol_instance", None)
+            if proto is not None:
+                with contextlib.suppress(Exception):
+                    proto.onClose = lambda wasClean, code, reason: None
+
     def graceful_shutdown(self, handshake_wait_seconds: float = 0.8) -> None:
+        self._intentional_shutdown = True
+        self._prepare_ws_for_shutdown()
         try:
             self._send_close_all(code=1000, reason="graceful client shutdown")
             time.sleep(handshake_wait_seconds)
@@ -308,6 +497,7 @@ class AsterClient:
     # -------------------------
     def run(self, run_seconds: int = DEFAULT_RUN_SECONDS) -> Dict[str, Any]:
         startup = self.rest_snapshot()
+        self._seed_from_rest_snapshot(startup)
 
         self.ws.start()
         streams = self._build_combined_streams()

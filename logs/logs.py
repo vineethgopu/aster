@@ -65,8 +65,13 @@ class CsvLogManager:
     """
     Owns 5 CSV appenders (one per "etype category" / function).
     """
-    def __init__(self, log_dir: str = "./logs") -> None:
+    def __init__(self, log_dir: str = "./logs", delete_logs: bool = False) -> None:
         os.makedirs(log_dir, exist_ok=True)
+        if delete_logs:
+            for file_name in os.listdir(log_dir):
+                file_path = os.path.join(log_dir, file_name)
+                if os.path.isfile(file_path) and file_name.endswith(".csv"):
+                    os.remove(file_path)
 
         self.writers = LogWriters(
             bars=CsvAppender(
@@ -137,7 +142,7 @@ class CsvLogManager:
         for sym, snap in symbol_rows.items():
             # ----- Bars -----
             bars = snap.get("bars") or {}
-            k1 = (bars.get("kline_1m") or {})
+            k1 = (bars.get("kline_1m") or bars)
 
             bars_rows.append({
                 "ts_unix_ms": ts_ms, "ts_dt_utc": ts_dt, "symbol": sym,
