@@ -164,11 +164,25 @@ if __name__ == "__main__":
                 tp_bps = args.take_profit_mult * (args.taker_fee_bps + opening_loss_bps + (funding_bps / 8.0))
                 sl_bps = args.stop_loss_bps if args.stop_loss_bps > 0 else tp_bps
                 trailing_callback_rate = args.trailing_callback_rate if args.trailing_callback_rate > 0 else None
-                order_qty = args.order_notional / snap.get("BBO").get("mid")
+
+                entry_limit_price = order_placer.get_entry_limit_price(sym, side, client)
+                if entry_limit_price is None:
+                    print(f"[ENTRY_SKIP] {sym} no BBO to compute entry price/qty")
+                    continue
+                try:
+                    order_qty = order_placer.compute_qty_for_notional(
+                        symbol=sym,
+                        entry_price=entry_limit_price,
+                        order_notional_usd=args.order_notional,
+                    )
+                except Exception as e:
+                    print(f"[ENTRY_SKIP] {sym} qty calc failed: {e}")
+                    continue
+
                 pos, entry_res = order_placer.entry(
                     symbol=sym,
                     side=side,
-                    quantity=args.order_qty,
+                    quantity=order_qty,
                     price_source=client,
                     take_profit_bps=tp_bps,
                     stop_loss_bps=sl_bps,
