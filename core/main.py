@@ -48,6 +48,7 @@ if __name__ == "__main__":
     parser.add_argument("--trailing_activation_frac", type=float, default=0.5)
     parser.add_argument("--trailing_callback_rate", type=float, default=-1.0)
     parser.add_argument("--margin_safety_multiple", type=float, default=1.2)
+    parser.add_argument("--reentry_cooldown_min", type=int, default=10)
 
     args = parser.parse_args()
 
@@ -84,6 +85,7 @@ if __name__ == "__main__":
     client.ws.live_subscribe(streams, id=1, callback=client._on_ws_message)
 
     positions: Dict[str, PositionState] = {}
+    cooldown_until_ms: Dict[str, int] = {}
     start = time.time()
     try:
         while (time.time() - start) < args.poll_time and not client._stop_event.is_set():
@@ -136,6 +138,7 @@ if __name__ == "__main__":
                         print(f"[POSITION] {sym} appears closed on exchange. Clearing local position state.")
                         order_placer.cancel_sibling_exit_orders(pos)
                         del positions[sym]
+                        cooldown_until_ms[sym] = ts_ms + args.reentry_cooldown_min * 60_000
                         continue
 
                     exit_res = order_placer.maybe_exit(
@@ -151,9 +154,22 @@ if __name__ == "__main__":
                         if exit_res.ok:
                             order_placer.cancel_sibling_exit_orders(pos)
                             del positions[sym]
+                            cooldown_until_ms[sym] = ts_ms + args.reentry_cooldown_min * 60_000
                     continue
 
                 if not decision or not decision.get("enter"):
+                    continue
+
+                # Enforce post-exit cooldown before new entries.
+                if ts_ms < cooldown_until_ms.get(sym, 0):
+                    remaining_s = (cooldown_until_ms[sym] - ts_ms) // 1000
+                    print(f"[ENTRY_BLOCKED] {sym} cooldown active, remaining={remaining_s}s")
+                    continue
+
+                # If local state is empty but exchange still has position, do not re-enter/increase.
+                live_qty = order_placer.get_position_abs_qty(sym)
+                if live_qty is not None and live_qty > 0:
+                    print(f"[ENTRY_BLOCKED] {sym} exchange position still open qty={live_qty}")
                     continue
 
                 side = str(decision.get("side") or "")
