@@ -2,20 +2,29 @@ from __future__ import annotations
 
 import argparse
 import time
+import os
 from pathlib import Path
 from typing import Dict
+from dotenv import load_dotenv
 
 from client import AsterClient
 from order import OrderPlacer, PositionState
 from strategy import Strategy, StrategyConfig
+
+load_dotenv()
 
 
 def _to_bool(s: str) -> bool:
     return str(s).strip().lower() == "true"
 
 
-def _read_secret(path: str) -> str:
-    return Path(path).read_text(encoding="utf-8").strip()
+def _read_secret(value_or_path: str | None) -> str:
+    if not value_or_path:
+        raise ValueError("Missing secret value/path in environment.")
+    p = Path(value_or_path).expanduser()
+    if p.exists():
+        return p.read_text(encoding="utf-8").strip()
+    return str(value_or_path).strip()
 
 
 def _now_ms() -> int:
@@ -39,8 +48,6 @@ if __name__ == "__main__":
     parser.add_argument("--max_funding_abs_bps", type=float, default=1.5)
 
     parser.add_argument("--enable_trading", type=_to_bool, default=False)
-    parser.add_argument("--api_key_path", type=str, default="./api/api.txt")
-    parser.add_argument("--api_secret_path", type=str, default="./api/secret.txt")
     parser.add_argument("--order_notional", type=float, default=5.0)
     parser.add_argument("--taker_fee_bps", type=float, default=4.0)
     parser.add_argument("--take_profit_mult", type=float, default=3.0)
@@ -69,8 +76,8 @@ if __name__ == "__main__":
 
     order_placer = None
     if args.enable_trading:
-        api_key = _read_secret(args.api_key_path)
-        api_secret = _read_secret(args.api_secret_path)
+        api_key = _read_secret(os.getenv("ORDER_API_KEY"))
+        api_secret = _read_secret(os.getenv("ORDER_SECRET_KEY"))
         order_placer = OrderPlacer(api_key=api_key, api_secret=api_secret)
         risk_setup = order_placer.ensure_risk_setup(symbols=symbols, leverage=10, margin_type="ISOLATED")
         print(f"[RISK_SETUP] {risk_setup}")

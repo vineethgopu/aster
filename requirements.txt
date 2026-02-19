@@ -1,0 +1,9 @@
+# Trading runtime dependencies
+aster-connector-python
+python-dotenv
+twisted
+
+# Backtest and data processing
+numpy
+pandas
+vectorbt

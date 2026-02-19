@@ -1,0 +1,22 @@
+[Unit]
+Description=Aster Strategy Runtime
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aster
+Group=aster
+WorkingDirectory=/opt/aster/core
+EnvironmentFile=/opt/aster/deploy/gce/aster.env
+ExecStart=/opt/aster/deploy/gce/run_strategy.sh
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGINT
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

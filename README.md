@@ -8,16 +8,13 @@ This repository contains:
 
 ```text
 .
-├── api/
-│   ├── api.txt
-│   └── secret.txt
 ├── core/
 │   ├── client.py
+│   ├── logs.py
 │   ├── main.py
 │   ├── order.py
 │   └── strategy.py
 ├── logs/
-│   ├── logs.py
 │   ├── kline.csv
 │   ├── bookTicker.csv
 │   ├── markPrice.csv
@@ -27,6 +24,15 @@ This repository contains:
 │   ├── build_backtest_inputs.py
 │   ├── backtest.py
 │   └── backtest_inputs.csv
+├── deploy/
+│   └── gce/
+│       ├── aster.service
+│       ├── bootstrap.sh
+│       ├── env.sample
+│       ├── fetch_secrets.sh
+│       ├── requirements.txt
+│       └── run_strategy.sh
+├── requirements.txt
 └── .vscode/launch.json
 ```
 
@@ -58,7 +64,7 @@ Data sources:
 Shutdown:
 - Graceful close handling to reduce reconnect/1006 shutdown noise
 
-### `logs/logs.py`
+### `core/logs.py`
 Purpose:
 - Buffered CSV logging manager for market snapshots
 
@@ -194,13 +200,14 @@ python core/main.py \
 
 ### Live run (with trading)
 ```bash
+export ORDER_API_KEY=./api/api.txt
+export ORDER_SECRET_KEY=./api/secret.txt
+
 python core/main.py \
   --symbols ETHUSDT \
   --poll_time 600 \
   --enable_trading true \
-  --order_notional 5 \
-  --api_key_path ./api/api.txt \
-  --api_secret_path ./api/secret.txt
+  --order_notional 5
 ```
 
 ### Build backtest features from logs
@@ -214,6 +221,146 @@ python backtest/build_backtest_inputs.py \
 ### Run vectorized backtest sweep
 ```bash
 python backtest/backtest.py
+```
+
+## GCE Deployment (VM + systemd)
+
+### 1) Create local gcloud CLI context
+```bash
+# macOS (Homebrew)
+brew install python@3.13
+echo 'export CLOUDSDK_PYTHON=/opt/homebrew/opt/python@3.13/libexec/bin/python' >> ~/.zshrc
+source ~/.zshrc
+brew reinstall --cask gcloud-cli
+
+gcloud auth login
+gcloud auth application-default login
+gcloud config set project <PROJECT_ID>
+gcloud config set compute/zone <ZONE>
+```
+
+### 2) Create/refresh secrets in Secret Manager
+```bash
+printf '%s' '<ASTER_API_KEY>' | gcloud secrets create aster-api-key \
+  --replication-policy=automatic --data-file=- || true
+printf '%s' '<ASTER_API_KEY>' | gcloud secrets versions add aster-api-key --data-file=-
+
+printf '%s' '<ASTER_API_SECRET>' | gcloud secrets create aster-api-secret \
+  --replication-policy=automatic --data-file=- || true
+printf '%s' '<ASTER_API_SECRET>' | gcloud secrets versions add aster-api-secret --data-file=-
+```
+
+### 3) Prepare VM and app runtime
+```bash
+gcloud compute ssh <VM_NAME> --zone <ZONE>
+
+# On VM
+sudo mkdir -p /opt
+sudo chown -R "$USER":"$USER" /opt
+cd /opt
+git clone <REPO_URL> aster
+cd /opt/aster
+
+sudo bash deploy/gce/bootstrap.sh
+sudo cp deploy/gce/env.sample deploy/gce/aster.env
+sudo chown aster:aster deploy/gce/aster.env
+sudo chmod 640 deploy/gce/aster.env
+sudo nano deploy/gce/aster.env
+```
+
+### 4) Install and start systemd service
+```bash
+sudo cp /opt/aster/deploy/gce/aster.service /etc/systemd/system/aster.service
+sudo systemctl daemon-reload
+sudo systemctl enable aster
+sudo systemctl start aster
+```
+
+### 5) Operate and verify
+```bash
+sudo systemctl status aster
+journalctl -u aster -f
+ls -lh /opt/aster/logs
+```
+
+### 6) Update VM when repo changes
+
+Start every update from your VM checkout:
+```bash
+gcloud compute ssh <VM_NAME> --zone <ZONE>
+cd /opt/aster
+git status
+git fetch --all --tags
+git pull --ff-only
+```
+
+#### 6.1) Python code changes only
+Use this when only `.py` files changed and `requirements.txt` did not change.
+```bash
+cd /opt/aster
+git pull --ff-only
+sudo systemctl restart aster
+sudo systemctl status aster --no-pager
+journalctl -u aster -n 100 --no-pager
+```
+
+#### 6.2) Python dependency changes
+Use this when `requirements.txt` or `deploy/gce/requirements.txt` changed.
+```bash
+cd /opt/aster
+git pull --ff-only
+/opt/aster/.venv/bin/pip install --upgrade pip wheel
+/opt/aster/.venv/bin/pip install -r /opt/aster/deploy/gce/requirements.txt
+sudo systemctl restart aster
+sudo systemctl status aster --no-pager
+```
+
+#### 6.3) OS/runtime environment changes
+Use this when deployment scripts or service wiring changed:
+- `deploy/gce/bootstrap.sh`
+- `deploy/gce/fetch_secrets.sh`
+- `deploy/gce/run_strategy.sh`
+- `deploy/gce/aster.service`
+
+```bash
+cd /opt/aster
+git pull --ff-only
+sudo bash /opt/aster/deploy/gce/bootstrap.sh
+sudo cp /opt/aster/deploy/gce/aster.service /etc/systemd/system/aster.service
+sudo systemctl daemon-reload
+sudo systemctl restart aster
+sudo systemctl status aster --no-pager
+```
+
+If only runtime params changed (`deploy/gce/aster.env`), just edit env and restart:
+```bash
+sudo nano /opt/aster/deploy/gce/aster.env
+sudo systemctl restart aster
+```
+
+#### 6.4) Other important update flows
+
+Secret rotation:
+```bash
+gcloud secrets versions add aster-api-key --data-file=api/api.txt
+gcloud secrets versions add aster-api-secret --data-file=api/secret.txt
+gcloud compute ssh <VM_NAME> --zone <ZONE> --command "sudo systemctl restart aster"
+```
+
+Rollback to known-good commit/tag:
+```bash
+gcloud compute ssh <VM_NAME> --zone <ZONE>
+cd /opt/aster
+git log --oneline -n 20
+git checkout <commit_or_tag>
+sudo systemctl restart aster
+```
+
+Post-update health checks:
+```bash
+sudo systemctl status aster --no-pager
+journalctl -u aster -n 200 --no-pager
+ls -lh /opt/aster/logs
 ```
 
 ## Notes
