@@ -269,6 +269,11 @@ sudo cp deploy/gce/env.sample deploy/gce/aster.env
 sudo chown aster:aster deploy/gce/aster.env
 sudo chmod 640 deploy/gce/aster.env
 sudo nano deploy/gce/aster.env
+
+# bootstrap chowns /opt/aster to service user (aster). Reclaim git metadata
+# ownership for your SSH user to avoid "dubious ownership" on future pulls.
+sudo chown -R "$USER":"$USER" /opt/aster/.git
+git config --global --add safe.directory /opt/aster
 ```
 
 ### 4) Install and start systemd service
@@ -284,6 +289,12 @@ sudo systemctl start aster
 sudo systemctl status aster
 journalctl -u aster -f
 ls -lh /opt/aster/logs
+```
+
+Manual secret fetch test (without running service):
+```bash
+cd /opt/aster
+sudo bash -lc 'set -a; source /opt/aster/deploy/gce/aster.env; set +a; /opt/aster/deploy/gce/fetch_secrets.sh'
 ```
 
 ### 6) Update VM when repo changes
@@ -332,6 +343,12 @@ Use this when deployment scripts or service wiring changed:
 cd /opt/aster
 git pull --ff-only
 sudo bash /opt/aster/deploy/gce/bootstrap.sh
+
+# bootstrap resets ownership to service user; restore git metadata ownership
+# for your deploy user before the next git operation.
+sudo chown -R "$USER":"$USER" /opt/aster/.git
+git config --global --add safe.directory /opt/aster
+
 sudo cp /opt/aster/deploy/gce/aster.service /etc/systemd/system/aster.service
 sudo systemctl daemon-reload
 sudo systemctl restart aster
