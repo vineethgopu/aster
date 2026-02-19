@@ -258,8 +258,11 @@ gcloud compute ssh <VM_NAME> --zone <ZONE>
 sudo mkdir -p /opt
 sudo chown -R "$USER":"$USER" /opt
 cd /opt
-git clone <REPO_URL> aster
+if [ ! -d /opt/aster/.git ]; then
+  git clone <REPO_URL> aster
+fi
 cd /opt/aster
+git pull --ff-only
 
 sudo bash deploy/gce/bootstrap.sh
 sudo cp deploy/gce/env.sample deploy/gce/aster.env
@@ -284,6 +287,9 @@ ls -lh /opt/aster/logs
 ```
 
 ### 6) Update VM when repo changes
+
+Assumption:
+- First-time setup already completed, and repo already exists at `/opt/aster`.
 
 Start every update from your VM checkout:
 ```bash

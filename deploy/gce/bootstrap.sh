@@ -8,6 +8,8 @@ set -euo pipefail
 APP_DIR="${APP_DIR:-/opt/aster}"
 APP_USER="${APP_USER:-aster}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+CONNECTOR_REPO="${CONNECTOR_REPO:-https://github.com/asterdex/aster-connector-python.git}"
+CONNECTOR_DIR="${CONNECTOR_DIR:-$APP_DIR/vendor/aster-connector-python}"
 
 # Bootstrap does package install + user creation + venv provisioning,
 # so it must run with elevated privileges.
@@ -48,6 +50,17 @@ fi
 
 # Keep installer tooling fresh for faster/more reliable wheel installs.
 sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install --upgrade pip wheel
+
+# Ensure local editable install of aster connector exists before installing
+# requirements, so "aster-connector-python" is satisfied without PyPI.
+if [[ ! -d "$CONNECTOR_DIR/.git" ]]; then
+  sudo -u "$APP_USER" mkdir -p "$(dirname "$CONNECTOR_DIR")"
+  sudo -u "$APP_USER" git clone "$CONNECTOR_REPO" "$CONNECTOR_DIR"
+else
+  sudo -u "$APP_USER" git -C "$CONNECTOR_DIR" fetch --all --tags
+  sudo -u "$APP_USER" git -C "$CONNECTOR_DIR" pull --ff-only || true
+fi
+sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install -e "$CONNECTOR_DIR"
 
 # Prefer deploy-scoped requirements file so VM install can be curated.
 # Fallback to repo root requirements if deploy override is absent.
