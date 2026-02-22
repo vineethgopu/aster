@@ -22,6 +22,11 @@ LOG_TABLE_MAP: Dict[str, str] = {
     "depth5": "depth5",
 }
 
+DEFAULT_NUMERIC_SCALE_BY_TYPE: Dict[str, int] = {
+    "NUMERIC": 9,
+    "BIGNUMERIC": 38,
+}
+
 
 def _utc_today_yyyymmdd() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d")
@@ -111,14 +116,50 @@ def _prepare_logframes(log_dir: Path, date_str: str) -> List[Tuple[str, str, pd.
     return prepared
 
 
-def _validate_table_exists(client: bigquery.Client, table_id: str) -> None:
+def _get_table_or_raise(client: bigquery.Client, table_id: str) -> bigquery.Table:
     try:
-        client.get_table(table_id)
+        return client.get_table(table_id)
     except NotFound as exc:
         raise RuntimeError(
             f"BigQuery table not found: {table_id}. "
             "Create dataset/table manually in GCP console before running loader."
         ) from exc
+
+
+def _format_numeric_cell(value: float, scale: int) -> Optional[str]:
+    if pd.isna(value):
+        return None
+    text = f"{float(value):.{scale}f}"
+    text = text.rstrip("0").rstrip(".")
+    return text if text else "0"
+
+
+def _coerce_numeric_columns_for_table(
+    df: pd.DataFrame,
+    table: bigquery.Table,
+) -> Tuple[pd.DataFrame, List[str]]:
+    out = df.copy()
+    rounded_cols: List[str] = []
+    schema_by_name = {field.name: field for field in table.schema}
+
+    for col in out.columns:
+        field = schema_by_name.get(col)
+        if field is None:
+            continue
+
+        field_type = field.field_type.upper()
+        if field_type not in DEFAULT_NUMERIC_SCALE_BY_TYPE:
+            continue
+
+        field_scale = getattr(field, "scale", None)
+        if field_scale is None:
+            field_scale = field.to_api_repr().get("scale")
+        scale = int(field_scale) if field_scale is not None else DEFAULT_NUMERIC_SCALE_BY_TYPE[field_type]
+        numeric_vals = pd.to_numeric(out[col], errors="coerce").round(scale)
+        out[col] = numeric_vals.map(lambda x, s=scale: _format_numeric_cell(x, s))
+        rounded_cols.append(f"{col}(scale={scale})")
+
+    return out, rounded_cols
 
 
 def _delete_partition_date(client: bigquery.Client, table_id: str, target_date: date) -> None:
@@ -182,9 +223,12 @@ def run(
     total_rows = 0
     for base_name, table_name, df in prepared:
         table_id = f"{project_id}.{dataset_name}.{table_name}"
-        _validate_table_exists(client=client, table_id=table_id)
+        table = _get_table_or_raise(client=client, table_id=table_id)
+        df_for_load, rounded_cols = _coerce_numeric_columns_for_table(df=df, table=table)
+        if rounded_cols:
+            print(f"[INFO] {base_name}: normalized numeric precision for columns={rounded_cols}")
         _delete_partition_date(client=client, table_id=table_id, target_date=target_date)
-        loaded = _load_dataframe_csv(client=client, table_id=table_id, df=df)
+        loaded = _load_dataframe_csv(client=client, table_id=table_id, df=df_for_load)
         total_rows += loaded
         print(f"[DONE] {base_name}: loaded_rows={loaded} table={table_id}")
 
