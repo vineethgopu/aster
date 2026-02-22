@@ -15,19 +15,26 @@ This repository contains:
 │   ├── order.py
 │   └── strategy.py
 ├── logs/
-│   ├── kline.csv
-│   ├── bookTicker.csv
-│   ├── markPrice.csv
-│   ├── aggTrade_1s.csv
-│   └── depth5.csv
+│   ├── kline_YYYYMMDD.csv
+│   ├── bookTicker_YYYYMMDD.csv
+│   ├── markPrice_YYYYMMDD.csv
+│   ├── aggTrade_1s_YYYYMMDD.csv
+│   └── depth5_YYYYMMDD.csv
 ├── backtest/
 │   ├── build_backtest_inputs.py
 │   ├── backtest.py
 │   └── backtest_inputs.csv
 ├── deploy/
 │   └── gce/
+│       ├── aster-daily-restart.service
+│       ├── aster-daily-restart.timer
+│       ├── aster-daily-stop.service
+│       ├── aster-daily-stop.timer
 │       ├── aster.service
 │       ├── bootstrap.sh
+│       ├── bq_load_logs.py
+│       ├── cleanup_old_logs.py
+│       ├── daily_batch_and_cleanup.sh
 │       ├── env.sample
 │       ├── fetch_secrets.sh
 │       ├── requirements.txt
@@ -69,15 +76,16 @@ Purpose:
 - Buffered CSV logging manager for market snapshots
 
 Outputs:
-- `kline.csv`
-- `bookTicker.csv`
-- `markPrice.csv`
-- `aggTrade_1s.csv`
-- `depth5.csv`
+- `kline_YYYYMMDD.csv`
+- `bookTicker_YYYYMMDD.csv`
+- `markPrice_YYYYMMDD.csv`
+- `aggTrade_1s_YYYYMMDD.csv`
+- `depth5_YYYYMMDD.csv`
 
 Notes:
 - Supports optional deletion of existing CSVs on startup
 - Writes header once; buffered flush
+- Auto-rolls files by UTC date so each day lands in a separate CSV
 
 ### `core/strategy.py`
 Purpose:
@@ -161,9 +169,9 @@ Purpose:
 - Compile backtest feature table from CSV logs
 
 Inputs:
-- `logs/kline.csv`
-- `logs/bookTicker.csv`
-- `logs/markPrice.csv`
+- `logs/kline_*.csv` (or legacy `logs/kline.csv`)
+- `logs/bookTicker_*.csv` (or legacy `logs/bookTicker.csv`)
+- `logs/markPrice_*.csv` (or legacy `logs/markPrice.csv`)
 
 Feature engineering:
 - Uses last snapshot per minute per symbol (backtest-friendly, does not require `k1_closed=True`)
@@ -250,6 +258,136 @@ printf '%s' '<ASTER_API_SECRET>' | gcloud secrets create aster-api-secret \
 printf '%s' '<ASTER_API_SECRET>' | gcloud secrets versions add aster-api-secret --data-file=-
 ```
 
+### 2.1) Runtime service account IAM (required for batch + logs)
+
+Attach these roles to the VM runtime service account:
+- `roles/secretmanager.secretAccessor`
+- `roles/logging.logWriter`
+- `roles/bigquery.jobUser`
+- `roles/bigquery.dataEditor` (dataset-level preferred)
+
+### 2.2) Create BigQuery dataset + tables manually (required)
+
+`deploy/gce/bq_load_logs.py` only loads data. It does not create datasets, tables, partitions, or clusters.
+
+Run this SQL in BigQuery editor (replace `<PROJECT_ID>`):
+
+```sql
+CREATE SCHEMA IF NOT EXISTS `<PROJECT_ID>.aster`
+OPTIONS(location = 'US');
+
+CREATE TABLE IF NOT EXISTS `<PROJECT_ID>.aster.kline` (
+  ts_unix_ms INT64,
+  ts_dt_utc STRING,
+  symbol STRING,
+  k1_start_ms INT64,
+  k1_close_ms INT64,
+  k1_open FLOAT64,
+  k1_high FLOAT64,
+  k1_low FLOAT64,
+  k1_close FLOAT64,
+  k1_base_vol FLOAT64,
+  k1_quote_vol FLOAT64,
+  k1_trades INT64,
+  k1_closed BOOL,
+  date DATE,
+  hour INT64,
+  minute INT64,
+  second INT64
+)
+PARTITION BY date
+CLUSTER BY symbol, hour, minute, second;
+
+CREATE TABLE IF NOT EXISTS `<PROJECT_ID>.aster.book_ticker` (
+  ts_unix_ms INT64,
+  ts_dt_utc STRING,
+  symbol STRING,
+  bid_px FLOAT64,
+  bid_qty FLOAT64,
+  ask_px FLOAT64,
+  ask_qty FLOAT64,
+  spread FLOAT64,
+  mid FLOAT64,
+  imbalance FLOAT64,
+  weighted_mid FLOAT64,
+  date DATE,
+  hour INT64,
+  minute INT64,
+  second INT64
+)
+PARTITION BY date
+CLUSTER BY symbol, hour, minute, second;
+
+CREATE TABLE IF NOT EXISTS `<PROJECT_ID>.aster.mark_price` (
+  ts_unix_ms INT64,
+  ts_dt_utc STRING,
+  symbol STRING,
+  mark_px FLOAT64,
+  index_px FLOAT64,
+  funding_rate FLOAT64,
+  next_funding_time_ms INT64,
+  mark_index_bps FLOAT64,
+  date DATE,
+  hour INT64,
+  minute INT64,
+  second INT64
+)
+PARTITION BY date
+CLUSTER BY symbol, hour, minute, second;
+
+CREATE TABLE IF NOT EXISTS `<PROJECT_ID>.aster.agg_trade_1s` (
+  ts_unix_ms INT64,
+  ts_dt_utc STRING,
+  symbol STRING,
+  n_trades_1s INT64,
+  sum_qty_1s FLOAT64,
+  vwap_1s FLOAT64,
+  buy_qty_1s FLOAT64,
+  sell_qty_1s FLOAT64,
+  buy_notional_1s FLOAT64,
+  sell_notional_1s FLOAT64,
+  date DATE,
+  hour INT64,
+  minute INT64,
+  second INT64
+)
+PARTITION BY date
+CLUSTER BY symbol, hour, minute, second;
+
+CREATE TABLE IF NOT EXISTS `<PROJECT_ID>.aster.depth5` (
+  ts_unix_ms INT64,
+  ts_dt_utc STRING,
+  symbol STRING,
+  bid1_px FLOAT64,
+  bid2_px FLOAT64,
+  bid3_px FLOAT64,
+  bid4_px FLOAT64,
+  bid5_px FLOAT64,
+  bid1_qty FLOAT64,
+  bid2_qty FLOAT64,
+  bid3_qty FLOAT64,
+  bid4_qty FLOAT64,
+  bid5_qty FLOAT64,
+  ask1_px FLOAT64,
+  ask2_px FLOAT64,
+  ask3_px FLOAT64,
+  ask4_px FLOAT64,
+  ask5_px FLOAT64,
+  ask1_qty FLOAT64,
+  ask2_qty FLOAT64,
+  ask3_qty FLOAT64,
+  ask4_qty FLOAT64,
+  ask5_qty FLOAT64,
+  obi5 FLOAT64,
+  date DATE,
+  hour INT64,
+  minute INT64,
+  second INT64
+)
+PARTITION BY date
+CLUSTER BY symbol, hour, minute, second;
+```
+
 ### 3) Prepare VM and app runtime
 ```bash
 gcloud compute ssh <VM_NAME> --zone <ZONE>
@@ -270,6 +408,17 @@ sudo chown aster:aster deploy/gce/aster.env
 sudo chmod 640 deploy/gce/aster.env
 sudo nano deploy/gce/aster.env
 
+# Daily trading schedule (UTC):
+# - No new entries after ASTER_ENTRY_HALT_UTC (default 23:00)
+# - Force-close positions after ASTER_FORCE_EXIT_UTC (default 23:50)
+# These defaults align with the optional daily maintenance timers below.
+
+# Daily data pipeline:
+# - ASTER_BQ_ENABLE_DAILY_BATCH=true
+# - ASTER_BQ_PROJECT=<PROJECT_ID> (optional; defaults from VM metadata)
+# - ASTER_BQ_DATASET=aster
+# - ASTER_LOG_RETENTION_DAYS=7
+
 # bootstrap chowns /opt/aster to service user (aster). Reclaim git metadata
 # ownership for your SSH user to avoid "dubious ownership" on future pulls.
 sudo chown -R "$USER":"$USER" /opt/aster/.git
@@ -284,6 +433,35 @@ sudo systemctl enable aster
 sudo systemctl start aster
 ```
 
+### 4.1) Enable daily maintenance window (optional)
+
+This schedules:
+- Batch window at `23:55 UTC`:
+  - stop `aster.service`
+  - load same-day CSVs into BigQuery
+  - delete local CSVs older than 7 days
+- Restart at `00:00 UTC`
+
+```bash
+sudo cp /opt/aster/deploy/gce/aster-daily-stop.service /etc/systemd/system/aster-daily-stop.service
+sudo cp /opt/aster/deploy/gce/aster-daily-stop.timer /etc/systemd/system/aster-daily-stop.timer
+sudo cp /opt/aster/deploy/gce/aster-daily-restart.service /etc/systemd/system/aster-daily-restart.service
+sudo cp /opt/aster/deploy/gce/aster-daily-restart.timer /etc/systemd/system/aster-daily-restart.timer
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now aster-daily-stop.timer aster-daily-restart.timer
+
+systemctl list-timers --all | grep aster
+```
+
+Notes:
+- `aster.service` uses `Restart=on-failure`, so a clean exit after `ASTER_POLL_TIME` will not auto-restart.
+  - For continuous runtime, set `ASTER_POLL_TIME` to a large value (e.g. `86400`) and rely on the daily timers.
+- BigQuery dataset/tables must exist before batch load (create once via SQL above).
+- BigQuery does not have traditional row indexes; this pipeline uses:
+  - `PARTITION BY date`
+  - `CLUSTER BY symbol, hour, minute, second`
+
 ### 5) Operate and verify
 ```bash
 sudo systemctl status aster
@@ -295,6 +473,23 @@ Manual secret fetch test (without running service):
 ```bash
 cd /opt/aster
 sudo bash -lc 'set -a; source /opt/aster/deploy/gce/aster.env; set +a; /opt/aster/deploy/gce/fetch_secrets.sh'
+```
+
+Manual daily batch test (stop + upload + cleanup):
+```bash
+cd /opt/aster
+sudo /opt/aster/deploy/gce/daily_batch_and_cleanup.sh
+```
+
+Manual BigQuery load test only (no writes):
+```bash
+cd /opt/aster
+/opt/aster/.venv/bin/python /opt/aster/deploy/gce/bq_load_logs.py \
+  --project <PROJECT_ID> \
+  --log_dir /opt/aster/logs \
+  --dataset aster \
+  --date "$(date -u +%Y%m%d)" \
+  --dry_run
 ```
 
 ### 6) Update VM when repo changes
@@ -335,9 +530,13 @@ sudo systemctl status aster --no-pager
 #### 6.3) OS/runtime environment changes
 Use this when deployment scripts or service wiring changed:
 - `deploy/gce/bootstrap.sh`
+- `deploy/gce/bq_load_logs.py`
+- `deploy/gce/cleanup_old_logs.py`
+- `deploy/gce/daily_batch_and_cleanup.sh`
 - `deploy/gce/fetch_secrets.sh`
 - `deploy/gce/run_strategy.sh`
 - `deploy/gce/aster.service`
+- `deploy/gce/aster-daily-*.service` / `deploy/gce/aster-daily-*.timer`
 
 ```bash
 cd /opt/aster
@@ -350,6 +549,10 @@ sudo chown -R "$USER":"$USER" /opt/aster/.git
 git config --global --add safe.directory /opt/aster
 
 sudo cp /opt/aster/deploy/gce/aster.service /etc/systemd/system/aster.service
+sudo cp /opt/aster/deploy/gce/aster-daily-stop.service /etc/systemd/system/aster-daily-stop.service
+sudo cp /opt/aster/deploy/gce/aster-daily-stop.timer /etc/systemd/system/aster-daily-stop.timer
+sudo cp /opt/aster/deploy/gce/aster-daily-restart.service /etc/systemd/system/aster-daily-restart.service
+sudo cp /opt/aster/deploy/gce/aster-daily-restart.timer /etc/systemd/system/aster-daily-restart.timer
 sudo systemctl daemon-reload
 sudo systemctl restart aster
 sudo systemctl status aster --no-pager
@@ -386,10 +589,65 @@ journalctl -u aster -n 200 --no-pager
 ls -lh /opt/aster/logs
 ```
 
+## BigQuery Adhoc Queries (Jupyter)
+
+Install notebook deps in your local env:
+```bash
+pip install google-cloud-bigquery pandas-gbq
+```
+
+Example notebook code:
+```python
+from google.cloud import bigquery
+import pandas as pd
+
+client = bigquery.Client(project="<PROJECT_ID>")
+
+sql = """
+SELECT
+  date,
+  hour,
+  minute,
+  second,
+  symbol,
+  ts_unix_ms,
+  k1_close,
+  k1_base_vol
+FROM `<PROJECT_ID>.aster.kline`
+WHERE date BETWEEN DATE('2026-02-20') AND DATE('2026-02-22')
+  AND symbol = 'ETHUSDT'
+ORDER BY ts_unix_ms
+LIMIT 5000
+"""
+
+df = client.query(sql).to_dataframe()
+df.head()
+```
+
+Aggregate query example:
+```python
+sql = """
+SELECT
+  date,
+  symbol,
+  COUNT(*) AS n_rows,
+  AVG(spread) AS avg_spread,
+  AVG(mid) AS avg_mid
+FROM `<PROJECT_ID>.aster.book_ticker`
+WHERE date = DATE('2026-02-22')
+GROUP BY date, symbol
+ORDER BY symbol
+"""
+pd.read_gbq(sql, project_id="<PROJECT_ID>")
+```
+
 ## Notes
 
 - Paths like `./logs` are relative to your command working directory.
 - Keep API credentials out of version control.
+- Live logs are written as dated files (for example `kline_20260222.csv`).
+- Daily batch at `23:55 UTC` loads logs into BigQuery and removes local files older than 7 days.
+- BigQuery tables are managed manually (the loader only validates and writes).
 - Live and backtest flows are intentionally separated:
   - `core/*` for streaming + execution
   - `backtest/*` for offline evaluation

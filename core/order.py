@@ -545,6 +545,52 @@ class OrderPlacer:
 
         return None
 
+    def close_position(
+        self,
+        pos: PositionState,
+        price_source: Any,
+        reason: str = "MANUAL",
+        notes: str = "",
+        extra: Optional[Dict[str, Any]] = None,
+        order_type: str = "MARKET",
+        refresh_from_exchange: bool = True,
+    ) -> ExitResult:
+        """
+        Force-close a position with a reduce-only taker order.
+
+        If refresh_from_exchange is True, uses live exchange positionAmt (sign+qty) to
+        select the close side and quantity. This is safer than relying on local state.
+        """
+        extra = extra or {}
+
+        pos_to_close = pos
+        if refresh_from_exchange:
+            live_amt = self.get_position_amt(pos.symbol)
+            if live_amt is not None and abs(live_amt) > 0:
+                # Derive side from exchange sign to avoid accidental wrong-way closes.
+                live_side = "BUY" if live_amt > 0 else "SELL"
+                pos_to_close = PositionState(
+                    symbol=pos.symbol,
+                    side=live_side,
+                    qty=abs(live_amt),
+                    entry_vwap_px=pos.entry_vwap_px or 0.0,
+                    opened_time_ms=pos.opened_time_ms,
+                    maker_order_id=pos.maker_order_id,
+                    taker_order_id=pos.taker_order_id,
+                    take_profit_order_id=pos.take_profit_order_id,
+                    stop_loss_order_id=pos.stop_loss_order_id,
+                    trailing_stop_order_id=pos.trailing_stop_order_id,
+                )
+
+        return self._close_position(
+            pos=pos_to_close,
+            price_source=price_source,
+            reason=reason,
+            notes=notes,
+            extra=extra,
+            order_type=order_type,
+        )
+
     # ----------------------------
     # Internal: close position
     # ----------------------------
@@ -694,7 +740,8 @@ class OrderPlacer:
             payload["origClientOrderId"] = str(orig_client_order_id)
         return self.rest.sign_request("DELETE", "/fapi/v1/order", payload)
 
-    def get_position_abs_qty(self, symbol: str) -> Optional[float]:
+    def get_position_amt(self, symbol: str) -> Optional[float]:
+        """Signed position amount (long > 0, short < 0)."""
         try:
             resp = self.rest.get_position_risk(symbol=symbol, recvWindow=max(self.recv_window_ms, 6000))
         except ClientError as e:
@@ -711,8 +758,14 @@ class OrderPlacer:
                 continue
             amt = _safe_float(row.get("positionAmt"))
             if amt is not None:
-                return abs(amt)
+                return float(amt)
         return None
+
+    def get_position_abs_qty(self, symbol: str) -> Optional[float]:
+        amt = self.get_position_amt(symbol)
+        if amt is None:
+            return None
+        return abs(amt)
 
     def cancel_sibling_exit_orders(self, pos: PositionState) -> None:
         order_ids = [

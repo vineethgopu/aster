@@ -52,4 +52,6 @@ exec python main.py \
   --trailing_activation_frac "${ASTER_TRAILING_ACTIVATION_FRAC:-0.5}" \
   --trailing_callback_rate "${ASTER_TRAILING_CALLBACK_RATE:--1.0}" \
   --margin_safety_multiple "${ASTER_MARGIN_SAFETY_MULTIPLE:-1.2}" \
-  --reentry_cooldown_min "${ASTER_REENTRY_COOLDOWN_MIN:-10}"
+  --reentry_cooldown_min "${ASTER_REENTRY_COOLDOWN_MIN:-10}" \
+  --entry_halt_utc "${ASTER_ENTRY_HALT_UTC:-23:00}" \
+  --force_exit_utc "${ASTER_FORCE_EXIT_UTC:-23:50}"

@@ -13,6 +13,11 @@ def fmt_dt_utc(ts_ms: int) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S.%f")
 
 
+def fmt_date_utc(ts_ms: Optional[int] = None) -> str:
+    dt = datetime.now(timezone.utc) if ts_ms is None else datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+    return dt.strftime("%Y%m%d")
+
+
 class CsvAppender:
     """
     Buffered CSV appender. Writes header once. Flushes every N rows.
@@ -66,56 +71,63 @@ class CsvLogManager:
     Owns 5 CSV appenders (one per "etype category" / function).
     """
     def __init__(self, log_dir: str = "./logs", delete_logs: bool = False) -> None:
-        os.makedirs(log_dir, exist_ok=True)
+        self.log_dir = log_dir
+        os.makedirs(self.log_dir, exist_ok=True)
         if delete_logs:
-            for file_name in os.listdir(log_dir):
-                file_path = os.path.join(log_dir, file_name)
+            for file_name in os.listdir(self.log_dir):
+                file_path = os.path.join(self.log_dir, file_name)
                 if os.path.isfile(file_path) and file_name.endswith(".csv"):
                     os.remove(file_path)
 
-        self.writers = LogWriters(
-            bars=CsvAppender(
-                os.path.join(log_dir, "kline.csv"),
-                fieldnames=[
-                    "ts_unix_ms", "ts_dt_utc", "symbol",
-                    "k1_start_ms", "k1_close_ms", "k1_open", "k1_high", "k1_low", "k1_close",
-                    "k1_base_vol", "k1_quote_vol", "k1_trades", "k1_closed",
-                ],
-            ),
-            bbo=CsvAppender(
-                os.path.join(log_dir, "bookTicker.csv"),
-                fieldnames=[
-                    "ts_unix_ms", "ts_dt_utc", "symbol",
-                    "bid_px", "bid_qty", "ask_px", "ask_qty", "spread", "mid",
-                    "imbalance", "weighted_mid",
-                ],
-            ),
-            funding=CsvAppender(
-                os.path.join(log_dir, "markPrice.csv"),
-                fieldnames=[
-                    "ts_unix_ms", "ts_dt_utc", "symbol",
-                    "mark_px", "index_px", "funding_rate", "next_funding_time_ms", "mark_index_bps",
-                ],
-            ),
-            trades_1s=CsvAppender(
-                os.path.join(log_dir, "aggTrade_1s.csv"),
-                fieldnames=[
-                    "ts_unix_ms", "ts_dt_utc", "symbol",
-                    "n_trades_1s", "sum_qty_1s", "vwap_1s",
-                    "buy_qty_1s", "sell_qty_1s",
-                    "buy_notional_1s", "sell_notional_1s",
-                ],
-            ),
-            depth5=CsvAppender(
-                os.path.join(log_dir, "depth5.csv"),
-                fieldnames=(
-                    ["ts_unix_ms", "ts_dt_utc", "symbol"]
-                    + [f"bid{i}_px" for i in range(1, 6)] + [f"bid{i}_qty" for i in range(1, 6)]
-                    + [f"ask{i}_px" for i in range(1, 6)] + [f"ask{i}_qty" for i in range(1, 6)]
-                    + ["obi5"]
-                ),
-            ),
+        self._bars_fields = [
+            "ts_unix_ms", "ts_dt_utc", "symbol",
+            "k1_start_ms", "k1_close_ms", "k1_open", "k1_high", "k1_low", "k1_close",
+            "k1_base_vol", "k1_quote_vol", "k1_trades", "k1_closed",
+        ]
+        self._bbo_fields = [
+            "ts_unix_ms", "ts_dt_utc", "symbol",
+            "bid_px", "bid_qty", "ask_px", "ask_qty", "spread", "mid",
+            "imbalance", "weighted_mid",
+        ]
+        self._funding_fields = [
+            "ts_unix_ms", "ts_dt_utc", "symbol",
+            "mark_px", "index_px", "funding_rate", "next_funding_time_ms", "mark_index_bps",
+        ]
+        self._trades_fields = [
+            "ts_unix_ms", "ts_dt_utc", "symbol",
+            "n_trades_1s", "sum_qty_1s", "vwap_1s",
+            "buy_qty_1s", "sell_qty_1s",
+            "buy_notional_1s", "sell_notional_1s",
+        ]
+        self._depth5_fields = (
+            ["ts_unix_ms", "ts_dt_utc", "symbol"]
+            + [f"bid{i}_px" for i in range(1, 6)] + [f"bid{i}_qty" for i in range(1, 6)]
+            + [f"ask{i}_px" for i in range(1, 6)] + [f"ask{i}_qty" for i in range(1, 6)]
+            + ["obi5"]
         )
+
+        self._active_datestr = fmt_date_utc()
+        self.writers = self._build_writers(self._active_datestr)
+
+    def _dated_path(self, base_name: str, date_str: str) -> str:
+        return os.path.join(self.log_dir, f"{base_name}_{date_str}.csv")
+
+    def _build_writers(self, date_str: str) -> LogWriters:
+        return LogWriters(
+            bars=CsvAppender(self._dated_path("kline", date_str), fieldnames=self._bars_fields),
+            bbo=CsvAppender(self._dated_path("bookTicker", date_str), fieldnames=self._bbo_fields),
+            funding=CsvAppender(self._dated_path("markPrice", date_str), fieldnames=self._funding_fields),
+            trades_1s=CsvAppender(self._dated_path("aggTrade_1s", date_str), fieldnames=self._trades_fields),
+            depth5=CsvAppender(self._dated_path("depth5", date_str), fieldnames=self._depth5_fields),
+        )
+
+    def _maybe_rollover(self, ts_ms: int) -> None:
+        new_datestr = fmt_date_utc(ts_ms)
+        if new_datestr == self._active_datestr:
+            return
+        self.close()
+        self._active_datestr = new_datestr
+        self.writers = self._build_writers(self._active_datestr)
 
     def write_second(
         self,
@@ -131,6 +143,7 @@ class CsvLogManager:
            "l2": {"bids":[(px,qty)...], "asks":[...]} or None
         }
         """
+        self._maybe_rollover(ts_ms)
         ts_dt = fmt_dt_utc(ts_ms)
 
         bars_rows = []

@@ -1,0 +1,8 @@
+[Unit]
+Description=Stop Aster + Daily BigQuery Batch + Log Cleanup
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=/opt/aster/deploy/gce/aster.env
+ExecStart=/opt/aster/deploy/gce/daily_batch_and_cleanup.sh

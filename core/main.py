@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import time
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict
 from dotenv import load_dotenv
@@ -29,6 +30,21 @@ def _read_secret(value_or_path: str | None) -> str:
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+def _parse_hhmm_utc(s: str) -> int:
+    parts = str(s).strip().split(":")
+    if len(parts) != 2:
+        raise ValueError(f"Expected HH:MM, got: {s!r}")
+    hh = int(parts[0])
+    mm = int(parts[1])
+    if not (0 <= hh <= 23 and 0 <= mm <= 59):
+        raise ValueError(f"Invalid HH:MM, got: {s!r}")
+    return hh * 60 + mm
+
+
+def _utc_minute_of_day(ts_ms: int) -> tuple[int, datetime]:
+    dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+    return dt.hour * 60 + dt.minute, dt
 
 
 if __name__ == "__main__":
@@ -57,9 +73,15 @@ if __name__ == "__main__":
     parser.add_argument("--margin_safety_multiple", type=float, default=1.2)
     parser.add_argument("--reentry_cooldown_min", type=int, default=10)
 
+    # Daily UTC schedule controls (used for maintenance windows/restarts).
+    parser.add_argument("--entry_halt_utc", type=str, default="23:00")
+    parser.add_argument("--force_exit_utc", type=str, default="23:50")
+
     args = parser.parse_args()
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+    entry_halt_min = _parse_hhmm_utc(args.entry_halt_utc)
+    force_exit_min = _parse_hhmm_utc(args.force_exit_utc)
 
     client = AsterClient(symbols=symbols, log_dir=args.log_dir, delete_logs=args.delete_logs)
     strat = Strategy(
@@ -93,10 +115,12 @@ if __name__ == "__main__":
 
     positions: Dict[str, PositionState] = {}
     cooldown_until_ms: Dict[str, int] = {}
+    last_force_exit_attempt_ms: Dict[str, int] = {}
     start = time.time()
     try:
         while (time.time() - start) < args.poll_time and not client._stop_event.is_set():
             ts_ms = _now_ms()
+            utc_minute, utc_dt = _utc_minute_of_day(ts_ms)
 
             with client._lock:
                 symbol_rows = {}
@@ -140,6 +164,24 @@ if __name__ == "__main__":
 
                 pos = positions.get(sym)
                 if pos is not None:
+                    # Daily maintenance window: force-close any open position by cutoff.
+                    if utc_minute >= force_exit_min:
+                        last_attempt = last_force_exit_attempt_ms.get(sym, 0)
+                        if ts_ms - last_attempt >= 10_000:
+                            last_force_exit_attempt_ms[sym] = ts_ms
+                            exit_res = order_placer.close_position(
+                                pos=pos,
+                                price_source=client,
+                                reason="DAILY_CUTOFF",
+                                notes=f"utc={utc_dt.isoformat()} >= {args.force_exit_utc}",
+                            )
+                            print(f"[EXIT] {sym} {exit_res}")
+                            if exit_res.ok:
+                                order_placer.cancel_sibling_exit_orders(pos)
+                                del positions[sym]
+                                cooldown_until_ms[sym] = ts_ms + args.reentry_cooldown_min * 60_000
+                        continue
+
                     live_qty = order_placer.get_position_abs_qty(sym)
                     if live_qty is not None and live_qty <= 0:
                         print(f"[POSITION] {sym} appears closed on exchange. Clearing local position state.")
@@ -164,7 +206,40 @@ if __name__ == "__main__":
                             cooldown_until_ms[sym] = ts_ms + args.reentry_cooldown_min * 60_000
                     continue
 
+                # If local state is empty but exchange still has position, ensure we flatten
+                # before the daily restart window.
+                if utc_minute >= force_exit_min:
+                    live_amt = order_placer.get_position_amt(sym)
+                    if live_amt is not None and abs(live_amt) > 0:
+                        last_attempt = last_force_exit_attempt_ms.get(sym, 0)
+                        if ts_ms - last_attempt >= 10_000:
+                            last_force_exit_attempt_ms[sym] = ts_ms
+                            temp_pos = PositionState(
+                                symbol=sym,
+                                side=("BUY" if live_amt > 0 else "SELL"),
+                                qty=abs(live_amt),
+                                entry_vwap_px=0.0,
+                                opened_time_ms=ts_ms,
+                            )
+                            exit_res = order_placer.close_position(
+                                pos=temp_pos,
+                                price_source=client,
+                                reason="DAILY_CUTOFF",
+                                notes=f"utc={utc_dt.isoformat()} >= {args.force_exit_utc}",
+                            )
+                            print(f"[EXIT] {sym} {exit_res}")
+                            if exit_res.ok:
+                                cooldown_until_ms[sym] = ts_ms + args.reentry_cooldown_min * 60_000
+                        continue
+
                 if not decision or not decision.get("enter"):
+                    continue
+
+                # Daily maintenance window: stop new entries before restart window.
+                if utc_minute >= entry_halt_min:
+                    print(
+                        f"[ENTRY_BLOCKED] {sym} entry_halt_utc={args.entry_halt_utc} now_utc={utc_dt.isoformat()}"
+                    )
                     continue
 
                 # Enforce post-exit cooldown before new entries.

@@ -7,3 +7,4 @@ twisted
 numpy
 pandas
 vectorbt
+google-cloud-bigquery

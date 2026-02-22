@@ -70,6 +70,12 @@ if [[ ! -f "$REQ_FILE" ]]; then
 fi
 sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install -r "$REQ_FILE"
 
+# Ensure runtime scripts are executable for systemd/ops flows.
+chmod +x \
+  "$APP_DIR/deploy/gce/run_strategy.sh" \
+  "$APP_DIR/deploy/gce/fetch_secrets.sh" \
+  "$APP_DIR/deploy/gce/daily_batch_and_cleanup.sh"
+
 # Print next manual steps after bootstrap completes.
 echo "Bootstrap complete."
 echo "Next:"

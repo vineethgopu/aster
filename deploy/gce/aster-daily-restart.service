@@ -1,0 +1,6 @@
+[Unit]
+Description=Restart Aster Strategy After Daily Maintenance Window
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl restart aster.service

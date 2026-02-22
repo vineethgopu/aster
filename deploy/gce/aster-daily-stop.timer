@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Batch Timer for Aster Strategy (23:55 UTC)
+
+[Timer]
+OnCalendar=*-*-* 23:55:00 UTC
+Persistent=true
+Unit=aster-daily-stop.service
+
+[Install]
+WantedBy=timers.target

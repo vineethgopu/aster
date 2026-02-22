@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Restart Timer for Aster Strategy (00:00 UTC)
+
+[Timer]
+OnCalendar=*-*-* 00:00:00 UTC
+Persistent=true
+Unit=aster-daily-restart.service
+
+[Install]
+WantedBy=timers.target

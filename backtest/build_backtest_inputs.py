@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import glob
 from pathlib import Path
 from typing import Iterable, List
 
@@ -31,6 +32,18 @@ def _read_csv(path: Path, required_cols: Iterable[str]) -> pd.DataFrame:
     if missing:
         raise ValueError(f"{path} missing columns: {missing}")
     return df
+
+
+def _read_log_family(log_dir: Path, base_name: str, required_cols: Iterable[str]) -> pd.DataFrame:
+    dated = sorted(glob.glob(str(log_dir / f"{base_name}_*.csv")))
+    legacy = log_dir / f"{base_name}.csv"
+    paths = [Path(p) for p in dated]
+    if legacy.exists():
+        paths.append(legacy)
+    if not paths:
+        raise FileNotFoundError(f"No CSV files found for {base_name} in {log_dir}")
+    parts = [_read_csv(p, required_cols=required_cols) for p in paths]
+    return pd.concat(parts, ignore_index=True)
 
 
 def _prepare_kline(kline: pd.DataFrame) -> pd.DataFrame:
@@ -117,12 +130,13 @@ def _merge_symbol(sym: str, kline_sym: pd.DataFrame, book_sym: pd.DataFrame, mar
 
 
 def build_features(log_dir: Path, windows: List[int]) -> pd.DataFrame:
-    kline = _read_csv(
-        log_dir / "kline.csv",
-        ["symbol", "ts_unix_ms", "k1_close_ms", "k1_open", "k1_high", "k1_low", "k1_close", "k1_base_vol", "k1_closed"],
+    kline = _read_log_family(
+        log_dir=log_dir,
+        base_name="kline",
+        required_cols=["symbol", "ts_unix_ms", "k1_close_ms", "k1_open", "k1_high", "k1_low", "k1_close", "k1_base_vol", "k1_closed"],
     )
-    book = _read_csv(log_dir / "bookTicker.csv", ["symbol", "ts_unix_ms", "bid_px", "ask_px"])
-    mark = _read_csv(log_dir / "markPrice.csv", ["symbol", "ts_unix_ms", "mark_px", "funding_rate"])
+    book = _read_log_family(log_dir=log_dir, base_name="bookTicker", required_cols=["symbol", "ts_unix_ms", "bid_px", "ask_px"])
+    mark = _read_log_family(log_dir=log_dir, base_name="markPrice", required_cols=["symbol", "ts_unix_ms", "mark_px", "funding_rate"])
 
     kline = _prepare_kline(kline)
     book = _prepare_book(book)
