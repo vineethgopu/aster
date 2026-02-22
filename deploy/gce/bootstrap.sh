@@ -74,7 +74,8 @@ sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install -r "$REQ_FILE"
 chmod +x \
   "$APP_DIR/deploy/gce/run_strategy.sh" \
   "$APP_DIR/deploy/gce/fetch_secrets.sh" \
-  "$APP_DIR/deploy/gce/daily_batch_and_cleanup.sh"
+  "$APP_DIR/deploy/gce/daily_batch_and_cleanup.sh" \
+  "$APP_DIR/deploy/gce/toggle_production.sh"
 
 # Print next manual steps after bootstrap completes.
 echo "Bootstrap complete."

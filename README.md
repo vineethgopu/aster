@@ -38,7 +38,8 @@ This repository contains:
 │       ├── env.sample
 │       ├── fetch_secrets.sh
 │       ├── requirements.txt
-│       └── run_strategy.sh
+│       ├── run_strategy.sh
+│       └── toggle_production.sh
 ├── requirements.txt
 └── .vscode/launch.json
 ```
@@ -492,6 +493,13 @@ cd /opt/aster
   --dry_run
 ```
 
+Toggle full production automation (runtime + daily timers):
+```bash
+sudo /opt/aster/deploy/gce/toggle_production.sh on
+sudo /opt/aster/deploy/gce/toggle_production.sh off
+sudo /opt/aster/deploy/gce/toggle_production.sh status
+```
+
 ### 6) Update VM when repo changes
 
 Assumption:
@@ -535,6 +543,7 @@ Use this when deployment scripts or service wiring changed:
 - `deploy/gce/daily_batch_and_cleanup.sh`
 - `deploy/gce/fetch_secrets.sh`
 - `deploy/gce/run_strategy.sh`
+- `deploy/gce/toggle_production.sh`
 - `deploy/gce/aster.service`
 - `deploy/gce/aster-daily-*.service` / `deploy/gce/aster-daily-*.timer`
 
