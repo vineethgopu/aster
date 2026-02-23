@@ -10,9 +10,12 @@
         "T": [30],
         "n": [1.3],
         "V": [30],
-        "tp_bps": [12.0],
+        "tp_bps": [20.0],
         "sl_bps": [12.0],
-        "callbackRate": [0.002],
+        "activation_bps": [8.0],
+        "activation_buffer_bps": [0.5],
+        "callback_bps": [6.0],
+        "min_tp_gap_bps": [4.0],
         "spread_max": [0.2],
         "funding_max": [1.5]
       }

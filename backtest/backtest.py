@@ -9,6 +9,7 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 import vectorbt as vbt
+from numba import njit
 
 
 REQUIRED_PARAM_KEYS = [
@@ -18,10 +19,71 @@ REQUIRED_PARAM_KEYS = [
     "V",
     "tp_bps",
     "sl_bps",
-    "callbackRate",
+    "activation_bps",
+    "activation_buffer_bps",
+    "callback_bps",
+    "min_tp_gap_bps",
     "spread_max",
     "funding_max",
 ]
+
+
+def _to_float(x: object, key: str, symbol: str) -> float:
+    try:
+        return float(x)
+    except Exception as e:
+        raise ValueError(f"symbols.{symbol}.params.{key} contains non-numeric value: {x!r}") from e
+
+
+def _validate_param_values(symbol: str, key: str, values: List[object]) -> List[object]:
+    out: List[object] = []
+    for v in values:
+        fv = _to_float(v, key=key, symbol=symbol)
+        if key in ("T", "V"):
+            if fv <= 0 or int(fv) != fv:
+                raise ValueError(f"symbols.{symbol}.params.{key} must contain positive integers")
+            out.append(int(fv))
+        elif key in ("activation_buffer_bps", "min_tp_gap_bps"):
+            if fv < 0:
+                raise ValueError(f"symbols.{symbol}.params.{key} must be >= 0")
+            out.append(float(fv))
+        else:
+            if fv <= 0:
+                raise ValueError(f"symbols.{symbol}.params.{key} must be > 0")
+            out.append(float(fv))
+    return out
+
+
+@njit
+def _adjust_sl_with_activation_nb(c, activation_stop, callback_stop):
+    """
+    Emulate exchange-style trailing activation:
+    - Keep the base SL (sl_stop) until activation threshold is reached.
+    - After activation, switch to trailing stop distance = callback_bps.
+    """
+    if c.position_now == 0:
+        return c.curr_stop, c.curr_trail
+
+    cb = callback_stop[c.col]
+    if not np.isfinite(cb) or cb <= 0:
+        cb = activation_stop[c.init_i, c.col]
+        if cb <= 0:
+            cb = c.curr_stop if c.curr_stop > 0 else 0.0001
+    if c.curr_trail:
+        return cb, True
+
+    if c.init_price <= 0:
+        return c.curr_stop, c.curr_trail
+
+    activation = activation_stop[c.init_i, c.col]
+    if activation <= 0:
+        return cb, True
+
+    direction = 1.0 if c.position_now > 0 else -1.0
+    move = direction * (c.val_price_now / c.init_price - 1.0)
+    if move >= activation:
+        return cb, True
+    return c.curr_stop, False
 
 
 def load_config(path: Path) -> Dict:
@@ -53,8 +115,12 @@ def build_config_map(symbol_cfg: Dict[str, Dict]) -> pd.DataFrame:
             if not isinstance(param_space[key], list) or not param_space[key]:
                 raise ValueError(f"symbols.{symbol}.params.{key} must be a non-empty list")
 
-        keys = list(param_space.keys())
-        combos = list(itertools.product(*(param_space[k] for k in keys)))
+        normalized_space: Dict[str, List[object]] = {}
+        for key in REQUIRED_PARAM_KEYS:
+            normalized_space[key] = _validate_param_values(symbol, key, list(param_space[key]))
+
+        keys = list(normalized_space.keys())
+        combos = list(itertools.product(*(normalized_space[k] for k in keys)))
         df = pd.DataFrame(combos, columns=keys)
         df.insert(0, "symbol", symbol)
         out_parts.append(df)
@@ -135,6 +201,13 @@ def build_signals(
 
 def run_grid_backtest(
     close: pd.Series,
+    open_px: pd.Series,
+    high_px: pd.Series,
+    low_px: pd.Series,
+    tw_bid_px: pd.Series,
+    tw_ask_px: pd.Series,
+    opening_loss_bps: pd.Series,
+    funding_bps: pd.Series,
     long_entries: pd.DataFrame,
     long_exits: pd.DataFrame,
     short_entries: pd.DataFrame,
@@ -143,30 +216,77 @@ def run_grid_backtest(
     fee_bps: float = 4.0,
     slippage_bps: float = 0.0,
 ) -> vbt.Portfolio:
-    close_2d = pd.DataFrame(
-        np.repeat(close.values[:, None], len(params), axis=1),
-        index=close.index,
-        columns=params.index,
-    )
+    def _to_2d(s: pd.Series) -> pd.DataFrame:
+        return pd.DataFrame(
+            np.repeat(s.values[:, None], len(params), axis=1),
+            index=close.index,
+            columns=params.index,
+        )
+
+    close_2d = _to_2d(close)
+    open_2d = _to_2d(open_px)
+    high_2d = _to_2d(high_px)
+    low_2d = _to_2d(low_px)
 
     fees = fee_bps / 1e4
-    slippage = slippage_bps / 1e4
+    tw_mid = 0.5 * (tw_bid_px + tw_ask_px)
+    tw_mid = tw_mid.where(tw_mid > 0, close).fillna(close)
+    price_2d = _to_2d(tw_mid)
+    # Slippage in vectorbt is applied per order, so this half-spread component
+    # impacts both entry and exit (roundtrip ~= one full spread, before extras).
+    per_order_half_spread_slippage = ((tw_ask_px - tw_bid_px) / (2.0 * tw_mid)).clip(lower=0.0).fillna(0.0)
+    slippage_2d = _to_2d(per_order_half_spread_slippage + (slippage_bps / 1e4))
 
-    tp_stop = params["tp_bps"].values / 1e4 if "tp_bps" in params.columns else None
-    sl_stop = params["sl_bps"].values / 1e4 if "sl_bps" in params.columns else None
-    sl_trail = params["callbackRate"].values if "callbackRate" in params.columns else None
+    tp_bps_col = params["tp_bps"].astype(float).values[None, :]
+    sl_bps_col = params["sl_bps"].astype(float).values[None, :]
+    activation_bps_col = params["activation_bps"].astype(float).values[None, :]
+    activation_buffer_bps_col = params["activation_buffer_bps"].astype(float).values[None, :]
+    min_tp_gap_bps_col = params["min_tp_gap_bps"].astype(float).values[None, :]
+    callback_bps_col = params["callback_bps"].astype(float).values
+
+    opening_loss_mat = opening_loss_bps.reindex(close.index).astype(float).values[:, None]
+    funding_abs_mat = np.abs(funding_bps.reindex(close.index).astype(float).values[:, None])
+
+    # Activation floor per potential entry bar:
+    # 2*taker_fee + opening_loss + |funding|/8 + user buffer.
+    auto_activation_bps_mat = (
+        (2.0 * fee_bps)
+        + opening_loss_mat
+        + (funding_abs_mat / 8.0)
+        + activation_buffer_bps_col
+    )
+    activation_bps_mat = np.maximum(activation_bps_col, auto_activation_bps_mat)
+
+    # Enforce TP above activation by configured minimum gap.
+    tp_bps_mat = np.maximum(tp_bps_col, activation_bps_mat + np.maximum(min_tp_gap_bps_col, 0.0))
+    tp_stop = tp_bps_mat / 1e4
+
+    sl_stop = sl_bps_col / 1e4
+
+    # Trailing callback in relative units (fraction), e.g. 6 bps => 0.0006.
+    callback_stop = callback_bps_col / 1e4
+    activation_stop = activation_bps_mat / 1e4
+    sl_trail = False
 
     return vbt.Portfolio.from_signals(
         close=close_2d,
+        price=price_2d,
+        open=open_2d,
+        high=high_2d,
+        low=low_2d,
         entries=long_entries,
         exits=long_exits,
         short_entries=short_entries,
         short_exits=short_exits,
         fees=fees,
-        slippage=slippage,
+        slippage=slippage_2d,
         tp_stop=tp_stop,
         sl_stop=sl_stop,
         sl_trail=sl_trail,
+        stop_entry_price="Price",
+        stop_exit_price="Price",
+        adjust_sl_func_nb=_adjust_sl_with_activation_nb,
+        adjust_sl_args=(activation_stop, callback_stop),
         freq="1min",
     )
 
@@ -231,19 +351,42 @@ def _run_for_symbol(
     vol_by_t, avg_by_v = _build_feature_maps(inputs_df, t_values=t_values, v_values=v_values)
 
     close = pd.to_numeric(inputs_df["close"], errors="coerce")
+    open_px = pd.to_numeric(inputs_df.get("open", close), errors="coerce")
+    high_px = pd.to_numeric(inputs_df.get("high", close), errors="coerce")
+    low_px = pd.to_numeric(inputs_df.get("low", close), errors="coerce")
     ret_bps = pd.to_numeric(inputs_df["ret_bps"], errors="coerce")
     vol1m = pd.to_numeric(inputs_df["vol1m"], errors="coerce")
     spread_bps = pd.to_numeric(inputs_df["spread_bps"], errors="coerce")
     funding_bps = pd.to_numeric(inputs_df["funding_bps"], errors="coerce")
     opening_loss_bps = pd.to_numeric(inputs_df["opening_loss_bps"], errors="coerce")
+    tw_bid_px = pd.to_numeric(inputs_df.get("tw_bid_px", inputs_df.get("bid_px", close)), errors="coerce")
+    tw_ask_px = pd.to_numeric(inputs_df.get("tw_ask_px", inputs_df.get("ask_px", close)), errors="coerce")
+
+    open_px = open_px.fillna(close)
+    high_px = high_px.fillna(close)
+    low_px = low_px.fillna(close)
+    high_px = pd.concat([high_px, open_px, close], axis=1).max(axis=1)
+    low_px = pd.concat([low_px, open_px, close], axis=1).min(axis=1)
+    tw_bid_px = tw_bid_px.fillna(close)
+    tw_ask_px = tw_ask_px.fillna(close)
+    bad_spread = tw_bid_px > tw_ask_px
+    if bad_spread.any():
+        swap_bid = tw_bid_px.copy()
+        tw_bid_px = tw_bid_px.where(~bad_spread, tw_ask_px)
+        tw_ask_px = tw_ask_px.where(~bad_spread, swap_bid)
 
     valid = close.notna() & ret_bps.notna() & vol1m.notna() & spread_bps.notna() & funding_bps.notna() & opening_loss_bps.notna()
     close = close[valid]
+    open_px = open_px[valid]
+    high_px = high_px[valid]
+    low_px = low_px[valid]
     ret_bps = ret_bps[valid]
     vol1m = vol1m[valid]
     spread_bps = spread_bps[valid]
     funding_bps = funding_bps[valid]
     opening_loss_bps = opening_loss_bps[valid]
+    tw_bid_px = tw_bid_px[valid]
+    tw_ask_px = tw_ask_px[valid]
     for key in list(vol_by_t.keys()):
         vol_by_t[key] = vol_by_t[key][valid]
     for key in list(avg_by_v.keys()):
@@ -263,6 +406,13 @@ def _run_for_symbol(
     )
     pf = run_grid_backtest(
         close=close,
+        open_px=open_px,
+        high_px=high_px,
+        low_px=low_px,
+        tw_bid_px=tw_bid_px,
+        tw_ask_px=tw_ask_px,
+        opening_loss_bps=opening_loss_bps,
+        funding_bps=funding_bps,
         long_entries=le,
         long_exits=lx,
         short_entries=se,

@@ -178,7 +178,9 @@ def _top10_backtest_text(ranked_csv: Path) -> str:
         keep_cols = [c for c in [
             "config_id", "total_pnl", "total_return", "n_trades", "win_rate", "sharpe", "sortino",
             "max_drawdown", "avg_trade_pnl", "avg_win", "avg_loss", "avg_hold_bars",
-            "k", "T", "n", "V", "tp_bps", "sl_bps", "callbackRate", "spread_max", "funding_max"
+            "k", "T", "n", "V", "tp_bps", "sl_bps",
+            "activation_bps", "activation_buffer_bps", "callback_bps", "min_tp_gap_bps",
+            "spread_max", "funding_max"
         ] if c in sym_df.columns]
         blocks.append(sym_df[keep_cols].to_string(index=False))
         blocks.append("")

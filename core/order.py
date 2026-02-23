@@ -249,7 +249,7 @@ class OrderPlacer:
         taker_extra: Optional[Dict[str, Any]] = None,
         take_profit_bps: Optional[float] = None,
         stop_loss_bps: Optional[float] = None,
-        trailing_activation_frac: float = 0.5,
+        trailing_activation_bps: Optional[float] = None,
         trailing_activation_price: Optional[float] = None,
         trailing_callback_rate: Optional[float] = None,
         exit_trigger_extra: Optional[Dict[str, Any]] = None,
@@ -353,7 +353,7 @@ class OrderPlacer:
                 pos=pos,
                 take_profit_bps=take_profit_bps,
                 stop_loss_bps=stop_loss_bps,
-                trailing_activation_frac=trailing_activation_frac,
+                trailing_activation_bps=trailing_activation_bps,
                 trailing_activation_price=trailing_activation_price,
                 trailing_callback_rate=trailing_callback_rate,
                 extra=(exit_trigger_extra or {}),
@@ -406,7 +406,7 @@ class OrderPlacer:
         pos: PositionState,
         take_profit_bps: float,
         stop_loss_bps: float,
-        trailing_activation_frac: float = 0.5,
+        trailing_activation_bps: Optional[float] = None,
         trailing_activation_price: Optional[float] = None,
         trailing_callback_rate: Optional[float] = None,
         extra: Optional[Dict[str, Any]] = None,
@@ -429,12 +429,15 @@ class OrderPlacer:
         sl_stop_price = self._round_price(pos.symbol, sl_stop_price, mode="down")
         close_side = "SELL" if pos.is_long else "BUY"
         entry_px = pos.entry_vwap_px
-        trailing_activation_frac = max(0.0, min(1.0, trailing_activation_frac))
-
-        tp_price = tp_stop_price
         if trailing_activation_price is None:
-            # Halfway between execution and TP trigger price.
-            trailing_activation_price = entry_px + trailing_activation_frac * (tp_price - entry_px)
+            if trailing_activation_bps is None or trailing_activation_bps <= 0:
+                # Default to halfway-to-TP in bps terms if explicit activation is not provided.
+                trailing_activation_bps = take_profit_bps * 0.5
+            act_frac = trailing_activation_bps / 1e4
+            if pos.is_long:
+                trailing_activation_price = entry_px * (1.0 + act_frac)
+            else:
+                trailing_activation_price = entry_px * (1.0 - act_frac)
         trailing_activation_price = self._round_price(pos.symbol, trailing_activation_price, mode="down")
         if trailing_callback_rate is None:
             # As requested: (activation - execution) / execution (absolute).

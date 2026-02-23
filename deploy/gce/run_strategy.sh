@@ -47,10 +47,12 @@ exec python main.py \
   --max_spread "${ASTER_MAX_SPREAD:-0.2}" \
   --max_funding_abs_bps "${ASTER_MAX_FUNDING_ABS_BPS:-1.5}" \
   --taker_fee_bps "${ASTER_TAKER_FEE_BPS:-4.0}" \
-  --take_profit_mult "${ASTER_TAKE_PROFIT_MULT:-3.0}" \
-  --stop_loss_bps "${ASTER_STOP_LOSS_BPS:--1.0}" \
-  --trailing_activation_frac "${ASTER_TRAILING_ACTIVATION_FRAC:-0.5}" \
-  --trailing_callback_rate "${ASTER_TRAILING_CALLBACK_RATE:--1.0}" \
+  --take_profit_bps "${ASTER_TAKE_PROFIT_BPS:-20.0}" \
+  --stop_loss_bps "${ASTER_STOP_LOSS_BPS:-12.0}" \
+  --trailing_activation_bps "${ASTER_TRAILING_ACTIVATION_BPS:-8.0}" \
+  --trailing_activation_buffer_bps "${ASTER_TRAILING_ACTIVATION_BUFFER_BPS:-0.5}" \
+  --trailing_callback_bps "${ASTER_TRAILING_CALLBACK_BPS:-6.0}" \
+  --min_take_profit_gap_bps "${ASTER_MIN_TAKE_PROFIT_GAP_BPS:-4.0}" \
   --margin_safety_multiple "${ASTER_MARGIN_SAFETY_MULTIPLE:-1.2}" \
   --reentry_cooldown_min "${ASTER_REENTRY_COOLDOWN_MIN:-10}" \
   --entry_halt_utc "${ASTER_ENTRY_HALT_UTC:-23:00}" \

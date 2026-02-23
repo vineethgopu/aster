@@ -135,6 +135,9 @@ Exit logic (armed after fill):
 - `STOP_MARKET` (MARK_PRICE trigger)
 - `TRAILING_STOP_MARKET` (activation + callback)
 - `reduceOnly=True` for all exit triggers
+- Trigger levels are defined in bps from entry price (not multiplier/fraction config)
+- Trailing activation price is computed from `trailing_activation_bps`
+- Sibling exit cleanup: when position is detected flat, remaining TP/SL/trailing orders are cancelled
 
 Risk controls:
 - Margin kill-switch based on safety multiple:
@@ -161,7 +164,13 @@ Flow:
    - optionally write CSV logs (`--update_logs`)
    - run strategy on closed 1m bars
    - if signal triggered and no open local position:
-     - compute TP/SL/trailing params
+     - compute TP/SL/trailing params in bps
+       - breakeven floor:
+         - `be_floor_bps = 2 * taker_fee_bps + opening_loss_bps + |funding_bps|/8`
+       - activation floor:
+         - `activation_bps = max(trailing_activation_bps, be_floor_bps + trailing_activation_buffer_bps)`
+       - TP floor:
+         - `take_profit_bps = max(take_profit_bps, activation_bps + min_take_profit_gap_bps)`
      - compute order qty from `order_notional`
      - submit entry
      - arm exits
@@ -186,10 +195,12 @@ Inputs:
 Feature engineering:
 - Uses last snapshot per minute per symbol (backtest-friendly, does not require `k1_closed=True`)
 - Computes:
-  - `close`, `vol1m`, `ret_bps`
+  - `open`, `high`, `low`, `close`, `vol1m`, `ret_bps`
   - `spread_bps`
   - `funding_bps`
   - opening loss proxies
+  - time-weighted quote fields:
+    - `tw_bid_px`, `tw_ask_px` (1-second forward-filled then minute-averaged)
   - `rs_var_1m`
   - rolling `rs_vol_{10,30,60}m_bps`
   - rolling `avg_vol_{10,30,60}m`
@@ -200,8 +211,17 @@ Purpose:
 
 Main components:
 - Builds per-symbol parameter cartesian products from nested config
+- Enforces required config keys for each symbol:
+  - `k, T, n, V, tp_bps, sl_bps, activation_bps, activation_buffer_bps, callback_bps, min_tp_gap_bps, spread_max, funding_max`
 - `build_signals`: vectorized long/short entries + exits across all configs
-- `run_grid_backtest`: `vbt.Portfolio.from_signals(...)`
+- `run_grid_backtest`: `vbt.Portfolio.from_signals(...)` with:
+  - intrabar stop evaluation using `open/high/low`
+  - execution price anchored to `tw_mid = (tw_bid_px + tw_ask_px)/2`
+  - per-order slippage = half-spread + configured extra slippage
+  - stop pricing with `stop_entry_price="Price"` and `stop_exit_price="Price"`
+  - trailing activation emulation via `adjust_sl_func_nb`:
+    - stay on base SL until activation threshold is reached
+    - then switch to trailing callback distance
 - `build_ranked_metrics`: PnL/trade/risk metrics table (ranked by total_pnl)
 - Outputs:
   - `ranked_metrics.csv` (metrics + config_id + param values)
@@ -530,8 +550,8 @@ This schedules a weekly backtest run at `Sun 00:20 UTC`:
 
 Defaults in `run_backtest.sh`:
 - if `ASTER_BACKTEST_START_DATE`/`ASTER_BACKTEST_END_DATE` are empty:
-  - `end_date = UTC yesterday`
-  - `start_date = UTC 28 days ago`
+  - `end_date = UTC yesterday` (Saturday for the scheduled Sunday run)
+  - `start_date = UTC 28 days ago` (Sunday, 4 weeks before `end_date`)
 
 ```bash
 sudo cp /opt/aster/deploy/gce/backtest/aster-backtest.service /etc/systemd/system/aster-backtest.service

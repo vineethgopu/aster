@@ -171,6 +171,23 @@ def _prepare_book(book: pd.DataFrame) -> pd.DataFrame:
     return book.dropna(subset=["symbol", "ts_unix_ms"]).sort_values(["symbol", "ts_unix_ms"])
 
 
+def _compute_tw_book_1m(book_sym: pd.DataFrame) -> pd.DataFrame:
+    if book_sym.empty:
+        return pd.DataFrame(columns=["minute_bucket_ms", "tw_bid_px", "tw_ask_px"])
+    idx = pd.to_datetime(book_sym["ts_unix_ms"], unit="ms", utc=True)
+    q = book_sym.copy()
+    q.index = idx
+    q = q[["bid_px", "ask_px"]].sort_index()
+    q = q[~q.index.duplicated(keep="last")]
+    start = q.index.min().floor("1min")
+    end = q.index.max().ceil("1min")
+    sec_idx = pd.date_range(start=start, end=end, freq="1s", tz="UTC")
+    q_sec = q.reindex(sec_idx).ffill()
+    tw = q_sec.resample("1min").mean().rename(columns={"bid_px": "tw_bid_px", "ask_px": "tw_ask_px"})
+    tw["minute_bucket_ms"] = (tw.index.astype("int64") // 1_000_000).astype("int64")
+    return tw[["minute_bucket_ms", "tw_bid_px", "tw_ask_px"]].reset_index(drop=True)
+
+
 def _prepare_mark(mark: pd.DataFrame) -> pd.DataFrame:
     mark = mark.copy()
     for c in ["ts_unix_ms", "mark_px", "funding_rate"]:
@@ -210,6 +227,13 @@ def _merge_symbol(sym: str, kline_sym: pd.DataFrame, book_sym: pd.DataFrame, mar
         base["mark_px"] = np.nan
         base["funding_rate"] = np.nan
 
+    tw_book = _compute_tw_book_1m(book_sym)
+    if not tw_book.empty:
+        base = base.merge(tw_book, on="minute_bucket_ms", how="left")
+    else:
+        base["tw_bid_px"] = np.nan
+        base["tw_ask_px"] = np.nan
+
     base["symbol"] = sym
     return base
 
@@ -248,6 +272,9 @@ def build_features(
             continue
 
         merged = merged.sort_values("timestamp")
+        merged["open"] = merged["k1_open"].astype(float)
+        merged["high"] = merged["k1_high"].astype(float)
+        merged["low"] = merged["k1_low"].astype(float)
         merged["close"] = merged["k1_close"].astype(float)
         merged["vol1m"] = merged["k1_base_vol"].astype(float)
         merged["ret_bps"] = merged["close"].pct_change() * 1e4
@@ -286,11 +313,16 @@ def build_features(
         "timestamp",
         "symbol",
         "bar_ts_ms",
+        "open",
+        "high",
+        "low",
         "close",
         "vol1m",
         "ret_bps",
         "bid_px",
         "ask_px",
+        "tw_bid_px",
+        "tw_ask_px",
         "mid",
         "spread_bps",
         "mark_px",

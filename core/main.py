@@ -66,10 +66,12 @@ if __name__ == "__main__":
     parser.add_argument("--enable_trading", type=_to_bool, default=False)
     parser.add_argument("--order_notional", type=float, default=5.0)
     parser.add_argument("--taker_fee_bps", type=float, default=4.0)
-    parser.add_argument("--take_profit_mult", type=float, default=3.0)
-    parser.add_argument("--stop_loss_bps", type=float, default=-1.0)
-    parser.add_argument("--trailing_activation_frac", type=float, default=0.5)
-    parser.add_argument("--trailing_callback_rate", type=float, default=-1.0)
+    parser.add_argument("--take_profit_bps", type=float, default=20.0)
+    parser.add_argument("--stop_loss_bps", type=float, default=12.0)
+    parser.add_argument("--trailing_activation_bps", type=float, default=8.0)
+    parser.add_argument("--trailing_activation_buffer_bps", type=float, default=0.5)
+    parser.add_argument("--trailing_callback_bps", type=float, default=6.0)
+    parser.add_argument("--min_take_profit_gap_bps", type=float, default=4.0)
     parser.add_argument("--margin_safety_multiple", type=float, default=1.2)
     parser.add_argument("--reentry_cooldown_min", type=int, default=10)
 
@@ -78,6 +80,18 @@ if __name__ == "__main__":
     parser.add_argument("--force_exit_utc", type=str, default="23:50")
 
     args = parser.parse_args()
+    if args.take_profit_bps <= 0:
+        raise ValueError("--take_profit_bps must be > 0")
+    if args.stop_loss_bps <= 0:
+        raise ValueError("--stop_loss_bps must be > 0")
+    if args.trailing_activation_bps <= 0:
+        raise ValueError("--trailing_activation_bps must be > 0")
+    if args.trailing_activation_buffer_bps < 0:
+        raise ValueError("--trailing_activation_buffer_bps must be >= 0")
+    if args.trailing_callback_bps <= 0:
+        raise ValueError("--trailing_callback_bps must be > 0")
+    if args.min_take_profit_gap_bps < 0:
+        raise ValueError("--min_take_profit_gap_bps must be >= 0")
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
     entry_halt_min = _parse_hhmm_utc(args.entry_halt_utc)
@@ -259,9 +273,12 @@ if __name__ == "__main__":
                 funding = snap.get("funding") or {}
                 opening_loss_bps = float(max(0.0, blockers.get("opening_loss_bps") or 0.0))
                 funding_bps = abs(float(funding.get("funding_rate") or 0.0) * 1e4)
-                tp_bps = args.take_profit_mult * (args.taker_fee_bps + opening_loss_bps + (funding_bps / 8.0))
-                sl_bps = args.stop_loss_bps if args.stop_loss_bps > 0 else tp_bps
-                trailing_callback_rate = args.trailing_callback_rate if args.trailing_callback_rate > 0 else None
+                be_floor_bps = 2.0 * args.taker_fee_bps + opening_loss_bps + (funding_bps / 8.0)
+                activation_auto_bps = be_floor_bps + max(0.0, args.trailing_activation_buffer_bps)
+                activation_bps = max(args.trailing_activation_bps, activation_auto_bps)
+                tp_bps = max(args.take_profit_bps, activation_bps + max(0.0, args.min_take_profit_gap_bps))
+                sl_bps = args.stop_loss_bps
+                trailing_callback_rate = args.trailing_callback_bps / 1e4
 
                 entry_limit_price = order_placer.get_entry_limit_price(sym, side, client)
                 if entry_limit_price is None:
@@ -284,7 +301,7 @@ if __name__ == "__main__":
                     price_source=client,
                     take_profit_bps=tp_bps,
                     stop_loss_bps=sl_bps,
-                    trailing_activation_frac=args.trailing_activation_frac,
+                    trailing_activation_bps=activation_bps,
                     trailing_callback_rate=trailing_callback_rate,
                 )
                 print(f"[ENTRY] {sym} {entry_res}")
@@ -299,6 +316,10 @@ if __name__ == "__main__":
                             f"stop_loss_mark_price={entry_res.raw.get('stop_loss_mark_price')} "
                             f"trailing_activation_price={entry_res.raw.get('trailing_activation_price')} "
                             f"trailing_callback_rate={entry_res.raw.get('trailing_callback_rate')} "
+                            f"be_floor_bps={be_floor_bps:.4f} "
+                            f"activation_bps={activation_bps:.4f} "
+                            f"take_profit_bps={tp_bps:.4f} "
+                            f"stop_loss_bps={sl_bps:.4f} "
                             f"current_mark_price={mark_px_now}"
                         )
                     )
