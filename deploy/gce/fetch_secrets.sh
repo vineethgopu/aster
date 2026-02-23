@@ -6,6 +6,7 @@ set -euo pipefail
 ASTER_SECRET_DIR="${ASTER_SECRET_DIR:-/opt/aster/.secrets}"
 ASTER_API_KEY_SECRET_NAME="${ASTER_API_KEY_SECRET_NAME:-aster-api-key}"
 ASTER_API_SECRET_SECRET_NAME="${ASTER_API_SECRET_SECRET_NAME:-aster-api-secret}"
+ASTER_EMAIL_SMTP_PASS_SECRET_NAME="${ASTER_EMAIL_SMTP_PASS_SECRET_NAME:-aster-email-smtp-pass}"
 
 # Ensure secret directory exists with restrictive permissions.
 # Files written here are plaintext and must not be world-readable.
@@ -58,6 +59,10 @@ fetch_secret() {
 # Write both API credential files used by core/main.py secret loader.
 fetch_secret "$ASTER_API_KEY_SECRET_NAME" "$ASTER_SECRET_DIR/api_key"
 fetch_secret "$ASTER_API_SECRET_SECRET_NAME" "$ASTER_SECRET_DIR/api_secret"
+
+# Email SMTP password secret used by deploy/gce/email_daily_report.py.
+fetch_secret "$ASTER_EMAIL_SMTP_PASS_SECRET_NAME" "$ASTER_SECRET_DIR/email_smtp_pass"
+chmod 600 "$ASTER_SECRET_DIR/email_smtp_pass"
 
 # Only service user should be able to read generated secret files.
 chmod 600 "$ASTER_SECRET_DIR/api_key" "$ASTER_SECRET_DIR/api_secret"

@@ -1,0 +1,3 @@
+config_id,symbol,k,T,n,V,tp_bps,sl_bps,callbackRate,spread_max,funding_max
+cfg_0000,ETHUSDT,1.0,30,1.3,30,12.0,12.0,0.002,0.2,1.5
+cfg_0001,ETHUSDT,1.5,30,1.3,30,12.0,12.0,0.002,0.2,1.5

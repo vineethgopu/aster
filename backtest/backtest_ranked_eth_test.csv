@@ -1,0 +1,3 @@
+config_id,symbol,total_pnl,total_return,n_trades,win_rate,sharpe,sortino,max_drawdown,avg_trade_pnl,avg_win,avg_loss,avg_hold_bars,k,T,n,V,tp_bps,sl_bps,callbackRate,spread_max,funding_max
+cfg_0000,ETHUSDT,0.0,0.0,0,,inf,inf,0.0,,,,,1.0,30,1.3,30,12.0,12.0,0.002,0.2,1.5
+cfg_0001,ETHUSDT,0.0,0.0,0,,inf,inf,0.0,,,,,1.5,30,1.3,30,12.0,12.0,0.002,0.2,1.5

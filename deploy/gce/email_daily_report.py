@@ -81,6 +81,16 @@ def _read_secret_file(path: Path) -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
+def _resolve_email_smtp_pass() -> str:
+    # SMTP password is read from the local secret file populated by
+    # deploy/gce/fetch_secrets.sh using Secret Manager.
+    secret_dir = Path(os.getenv("ASTER_SECRET_DIR", "/opt/aster/.secrets"))
+    pass_file = secret_dir / "email_smtp_pass"
+    if pass_file.exists():
+        return _read_secret_file(pass_file)
+    return ""
+
+
 def _prod_trade_summary() -> str:
     secret_dir = Path(os.getenv("ASTER_SECRET_DIR", "/opt/aster/.secrets"))
     api_key_path = secret_dir / "api_key"
@@ -191,14 +201,15 @@ def _send_email(subject_prefix: str, body: str, recipients_env_key: str) -> None
     smtp_host = os.getenv("ASTER_EMAIL_SMTP_HOST", "").strip()
     smtp_port = int(os.getenv("ASTER_EMAIL_SMTP_PORT", "587"))
     smtp_user = os.getenv("ASTER_EMAIL_SMTP_USER", "").strip()
-    smtp_pass = os.getenv("ASTER_EMAIL_SMTP_PASS", "").strip()
-    sender = os.getenv("ASTER_EMAIL_FROM", smtp_user).strip()
+    smtp_pass = _resolve_email_smtp_pass()
+    sender = smtp_user
     recipients_raw = os.getenv(recipients_env_key, "").strip()
     recipients = [x.strip() for x in recipients_raw.split(",") if x.strip()]
 
-    if not (smtp_host and smtp_user and smtp_pass and sender and recipients):
+    if not (smtp_host and smtp_user and smtp_pass and recipients):
         raise ValueError(
-            f"Email not configured. Set SMTP vars + recipients ({recipients_env_key})."
+            f"Email not configured. Set SMTP host/user + recipients ({recipients_env_key}) "
+            "and ensure /opt/aster/.secrets/email_smtp_pass exists via fetch_secrets.sh."
         )
 
     now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
