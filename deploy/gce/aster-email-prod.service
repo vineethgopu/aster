@@ -1,0 +1,13 @@
+[Unit]
+Description=Aster Daily Production Email Report
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=/opt/aster/deploy/gce/aster.env
+ExecStart=/opt/aster/.venv/bin/python /opt/aster/deploy/gce/email_daily_report.py --mode production
+StandardOutput=journal
+StandardError=journal
+

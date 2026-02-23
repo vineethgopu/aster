@@ -31,11 +31,14 @@ This repository contains:
 │       ├── aster-daily-restart.timer
 │       ├── aster-daily-stop.service
 │       ├── aster-daily-stop.timer
+│       ├── aster-email-prod.service
+│       ├── aster-email-prod.timer
 │       ├── aster.service
 │       ├── bootstrap.sh
 │       ├── bq_load_logs.py
 │       ├── cleanup_old_logs.py
 │       ├── daily_batch_and_cleanup.sh
+│       ├── email_daily_report.py
 │       ├── env.sample
 │       ├── fetch_secrets.sh
 │       ├── requirements.txt
@@ -545,6 +548,46 @@ sudo /opt/aster/deploy/gce/backtest/run_backtest.sh
 journalctl -u aster-backtest -n 200 --no-pager
 ```
 
+### 5.2) Enable email reports (optional)
+
+Email report modes:
+- Daily production report (`00:35 UTC` via `aster-email-prod.timer`):
+  - `aster` service status
+  - trades per symbol (today UTC) with realized PnL stats
+  - runtime issue metadata from logs (errors/warnings/timeouts/connection closes/tracebacks)
+- Backtest completion report (triggered by `run_backtest.sh` on successful completion):
+  - `aster-backtest` service status
+  - top-10 configs per symbol from `ranked_metrics.csv`
+
+Configure in `/opt/aster/deploy/gce/aster.env`:
+```bash
+ASTER_EMAIL_PROD_ENABLE=true
+ASTER_EMAIL_BACKTEST_ENABLE=true
+ASTER_EMAIL_BACKTEST_ON_COMPLETION=true
+ASTER_EMAIL_SMTP_HOST=<smtp_host>
+ASTER_EMAIL_SMTP_PORT=587
+ASTER_EMAIL_SMTP_USER=<smtp_user>
+ASTER_EMAIL_SMTP_PASS=<smtp_pass>
+ASTER_EMAIL_FROM=<from_email>
+ASTER_EMAIL_TO_PROD=<prod_recipients_csv>
+ASTER_EMAIL_TO_BACKTEST=<backtest_recipients_csv>
+```
+
+Install units/timers:
+```bash
+sudo cp /opt/aster/deploy/gce/aster-email-prod.service /etc/systemd/system/aster-email-prod.service
+sudo cp /opt/aster/deploy/gce/aster-email-prod.timer /etc/systemd/system/aster-email-prod.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now aster-email-prod.timer
+```
+
+Manual tests:
+```bash
+sudo systemctl start aster-email-prod.service
+sudo -u aster /opt/aster/.venv/bin/python /opt/aster/deploy/gce/email_daily_report.py --mode backtest
+journalctl -u aster-email-prod -n 200 --no-pager
+```
+
 ### 6) Update VM when repo changes
 
 Assumption:
@@ -590,10 +633,12 @@ Use this when deployment scripts or service wiring changed:
 - `deploy/gce/run_strategy.sh`
 - `deploy/gce/toggle_production.sh`
 - `deploy/gce/backtest/run_backtest.sh`
+- `deploy/gce/email_daily_report.py`
 - `deploy/gce/aster.service`
 - `deploy/gce/aster-daily-*.service` / `deploy/gce/aster-daily-*.timer`
 - `deploy/gce/backtest/aster-backtest.service`
 - `deploy/gce/backtest/aster-backtest.timer`
+- `deploy/gce/aster-email-prod.service` / `deploy/gce/aster-email-prod.timer`
 
 ```bash
 cd /opt/aster
@@ -612,6 +657,8 @@ sudo cp /opt/aster/deploy/gce/aster-daily-restart.service /etc/systemd/system/as
 sudo cp /opt/aster/deploy/gce/aster-daily-restart.timer /etc/systemd/system/aster-daily-restart.timer
 sudo cp /opt/aster/deploy/gce/backtest/aster-backtest.service /etc/systemd/system/aster-backtest.service
 sudo cp /opt/aster/deploy/gce/backtest/aster-backtest.timer /etc/systemd/system/aster-backtest.timer
+sudo cp /opt/aster/deploy/gce/aster-email-prod.service /etc/systemd/system/aster-email-prod.service
+sudo cp /opt/aster/deploy/gce/aster-email-prod.timer /etc/systemd/system/aster-email-prod.timer
 sudo systemctl daemon-reload
 sudo systemctl restart aster
 sudo systemctl status aster --no-pager

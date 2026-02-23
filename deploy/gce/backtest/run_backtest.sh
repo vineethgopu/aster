@@ -23,6 +23,7 @@ QUERY_SYMBOLS="${ASTER_BACKTEST_QUERY_SYMBOLS:-}"
 QUERY_START_DATE="${ASTER_BACKTEST_START_DATE:-}"
 QUERY_END_DATE="${ASTER_BACKTEST_END_DATE:-}"
 QUERY_WINDOWS="${ASTER_BACKTEST_FEATURE_WINDOWS:-10,30,60}"
+EMAIL_ON_COMPLETION="${ASTER_EMAIL_BACKTEST_ON_COMPLETION:-true}"
 
 if [[ ! -x "$PY_BIN" ]]; then
   echo "[BACKTEST] Missing python venv at $PY_BIN"
@@ -85,3 +86,13 @@ echo "[BACKTEST] Running vectorbt backtest..."
   --out_ranked_csv "$RANKED_OUT"
 
 echo "[BACKTEST] Done. Ranked output: $RANKED_OUT"
+
+EMAIL_ON_COMPLETION_NORM="$(printf '%s' "$EMAIL_ON_COMPLETION" | tr '[:upper:]' '[:lower:]')"
+if [[ "$EMAIL_ON_COMPLETION_NORM" == "true" ]]; then
+  echo "[BACKTEST] Sending backtest completion email..."
+  if ! "$PY_BIN" "$APP_DIR/deploy/gce/email_daily_report.py" --mode backtest; then
+    echo "[BACKTEST] WARNING: backtest email report failed; backtest outputs are still complete."
+  fi
+else
+  echo "[BACKTEST] ASTER_EMAIL_BACKTEST_ON_COMPLETION=false, skipping completion email."
+fi

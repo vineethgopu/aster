@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Aster Production Email Timer
+
+[Timer]
+OnCalendar=*-*-* 00:35:00 UTC
+Persistent=true
+Unit=aster-email-prod.service
+
+[Install]
+WantedBy=timers.target
+
