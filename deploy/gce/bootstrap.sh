@@ -75,7 +75,8 @@ chmod +x \
   "$APP_DIR/deploy/gce/run_strategy.sh" \
   "$APP_DIR/deploy/gce/fetch_secrets.sh" \
   "$APP_DIR/deploy/gce/daily_batch_and_cleanup.sh" \
-  "$APP_DIR/deploy/gce/toggle_production.sh"
+  "$APP_DIR/deploy/gce/toggle_production.sh" \
+  "$APP_DIR/deploy/gce/backtest/run_backtest.sh"
 
 # Print next manual steps after bootstrap completes.
 echo "Bootstrap complete."

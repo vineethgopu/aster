@@ -1,0 +1,21 @@
+{
+  "inputs_csv": "./backtest/backtest_inputs.csv",
+  "output_dir": "./backtest/results",
+  "fee_bps": 4.0,
+  "slippage_bps": 0.0,
+  "symbols": {
+    "ETHUSDT": {
+      "params": {
+        "k": [1.0, 1.5],
+        "T": [30],
+        "n": [1.3],
+        "V": [30],
+        "tp_bps": [12.0],
+        "sl_bps": [12.0],
+        "callbackRate": [0.002],
+        "spread_max": [0.2],
+        "funding_max": [1.5]
+      }
+    }
+  }
+}

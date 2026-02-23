@@ -1,0 +1,10 @@
+[Unit]
+Description=Schedule Aster Backtest Runner
+
+[Timer]
+OnCalendar=Sun *-*-* 00:20:00 UTC
+Persistent=true
+Unit=aster-backtest.service
+
+[Install]
+WantedBy=timers.target

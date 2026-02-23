@@ -23,6 +23,7 @@ This repository contains:
 ├── backtest/
 │   ├── build_backtest_inputs.py
 │   ├── backtest.py
+│   ├── config_grid.json
 │   └── backtest_inputs.csv
 ├── deploy/
 │   └── gce/
@@ -39,7 +40,11 @@ This repository contains:
 │       ├── fetch_secrets.sh
 │       ├── requirements.txt
 │       ├── run_strategy.sh
-│       └── toggle_production.sh
+│       ├── toggle_production.sh
+│       └── backtest/
+│           ├── aster-backtest.service
+│           ├── aster-backtest.timer
+│           └── run_backtest.sh
 ├── requirements.txt
 └── .vscode/launch.json
 ```
@@ -167,12 +172,13 @@ Flow:
 
 ### `backtest/build_backtest_inputs.py`
 Purpose:
-- Compile backtest feature table from CSV logs
+- Compile backtest feature table from BigQuery tables
 
 Inputs:
-- `logs/kline_*.csv` (or legacy `logs/kline.csv`)
-- `logs/bookTicker_*.csv` (or legacy `logs/bookTicker.csv`)
-- `logs/markPrice_*.csv` (or legacy `logs/markPrice.csv`)
+- `<PROJECT_ID>.aster.kline`
+- `<PROJECT_ID>.aster.book_ticker`
+- `<PROJECT_ID>.aster.mark_price`
+- filtered by `--symbols`, `--start_date`, `--end_date`
 
 Feature engineering:
 - Uses last snapshot per minute per symbol (backtest-friendly, does not require `k1_closed=True`)
@@ -187,14 +193,16 @@ Feature engineering:
 
 ### `backtest/backtest.py`
 Purpose:
-- VectorBT-based parameter sweep and ranking
+- VectorBT-based parameter sweep and ranking using `backtest/config_grid.json`
 
 Main components:
-- `make_param_grid`: cartesian product of parameter sets
+- Builds per-symbol parameter cartesian products from nested config
 - `build_signals`: vectorized long/short entries + exits across all configs
 - `run_grid_backtest`: `vbt.Portfolio.from_signals(...)`
-- `build_ranked_metrics`: PnL/trade/risk metrics table
-- `plot_top_n`: equity, drawdown, trades for top configs
+- `build_ranked_metrics`: PnL/trade/risk metrics table (ranked by total_pnl)
+- Outputs:
+  - `ranked_metrics.csv` (metrics + config_id + param values)
+  - `config_mapping.csv` (config_id -> symbol + params)
 
 ## Typical Commands
 
@@ -219,17 +227,25 @@ python core/main.py \
   --order_notional 5
 ```
 
-### Build backtest features from logs
+### Build backtest features from BigQuery
 ```bash
 python backtest/build_backtest_inputs.py \
-  --log_dir ./logs \
+  --project <PROJECT_ID> \
+  --dataset aster \
+  --symbols ETHUSDT,BTCUSDT \
+  --start_date 2026-02-01 \
+  --end_date 2026-02-28 \
   --out_csv ./backtest/backtest_inputs.csv \
   --windows 10,30,60
 ```
 
-### Run vectorized backtest sweep
+### Run vectorized backtest sweep (config-driven)
 ```bash
-python backtest/backtest.py
+python backtest/backtest.py \
+  --config_file ./backtest/config_grid.json \
+  --inputs_csv ./backtest/backtest_inputs.csv \
+  --out_config_map_csv ./backtest/results/config_mapping.csv \
+  --out_ranked_csv ./backtest/results/ranked_metrics.csv
 ```
 
 ## GCE Deployment (VM + systemd)
@@ -500,6 +516,35 @@ sudo /opt/aster/deploy/gce/toggle_production.sh off
 sudo /opt/aster/deploy/gce/toggle_production.sh status
 ```
 
+### 5.1) Enable weekly backtest timer (optional)
+
+This schedules a weekly backtest run at `Sun 00:20 UTC`:
+- Builds `backtest_inputs.csv` from BigQuery
+- Runs config-driven VectorBT sweep
+- Writes:
+  - `/opt/aster/backtest/results/config_mapping.csv`
+  - `/opt/aster/backtest/results/ranked_metrics.csv`
+
+Defaults in `run_backtest.sh`:
+- if `ASTER_BACKTEST_START_DATE`/`ASTER_BACKTEST_END_DATE` are empty:
+  - `end_date = UTC yesterday`
+  - `start_date = UTC 28 days ago`
+
+```bash
+sudo cp /opt/aster/deploy/gce/backtest/aster-backtest.service /etc/systemd/system/aster-backtest.service
+sudo cp /opt/aster/deploy/gce/backtest/aster-backtest.timer /etc/systemd/system/aster-backtest.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now aster-backtest.timer
+
+systemctl list-timers --all | grep aster-backtest
+```
+
+Manual one-off run:
+```bash
+sudo /opt/aster/deploy/gce/backtest/run_backtest.sh
+journalctl -u aster-backtest -n 200 --no-pager
+```
+
 ### 6) Update VM when repo changes
 
 Assumption:
@@ -544,8 +589,11 @@ Use this when deployment scripts or service wiring changed:
 - `deploy/gce/fetch_secrets.sh`
 - `deploy/gce/run_strategy.sh`
 - `deploy/gce/toggle_production.sh`
+- `deploy/gce/backtest/run_backtest.sh`
 - `deploy/gce/aster.service`
 - `deploy/gce/aster-daily-*.service` / `deploy/gce/aster-daily-*.timer`
+- `deploy/gce/backtest/aster-backtest.service`
+- `deploy/gce/backtest/aster-backtest.timer`
 
 ```bash
 cd /opt/aster
@@ -562,6 +610,8 @@ sudo cp /opt/aster/deploy/gce/aster-daily-stop.service /etc/systemd/system/aster
 sudo cp /opt/aster/deploy/gce/aster-daily-stop.timer /etc/systemd/system/aster-daily-stop.timer
 sudo cp /opt/aster/deploy/gce/aster-daily-restart.service /etc/systemd/system/aster-daily-restart.service
 sudo cp /opt/aster/deploy/gce/aster-daily-restart.timer /etc/systemd/system/aster-daily-restart.timer
+sudo cp /opt/aster/deploy/gce/backtest/aster-backtest.service /etc/systemd/system/aster-backtest.service
+sudo cp /opt/aster/deploy/gce/backtest/aster-backtest.timer /etc/systemd/system/aster-backtest.timer
 sudo systemctl daemon-reload
 sudo systemctl restart aster
 sudo systemctl status aster --no-pager

@@ -1,0 +1,15 @@
+[Unit]
+Description=Aster Backtest Runner (Config-Driven)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=aster
+Group=aster
+WorkingDirectory=/opt/aster
+EnvironmentFile=/opt/aster/deploy/gce/aster.env
+ExecStart=/opt/aster/deploy/gce/backtest/run_backtest.sh
+StandardOutput=journal
+StandardError=journal
+
