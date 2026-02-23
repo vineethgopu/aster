@@ -13,10 +13,27 @@ from typing import Any, Dict, List, Tuple
 
 import pandas as pd
 from aster.rest_api import Client as AsterRestClient
+from dotenv import load_dotenv
 
 
-def _norm_bool(v: str) -> bool:
+def _to_bool(v: str) -> bool:
     return str(v).strip().lower() == "true"
+
+
+def _load_runtime_env() -> None:
+    # Allow direct CLI runs (outside systemd) to pick up VM runtime env.
+    env_file = os.getenv("ASTER_ENV_FILE", "/opt/aster/deploy/gce/aster.env")
+    p = Path(env_file)
+    if p.exists():
+        load_dotenv(dotenv_path=p, override=False)
+
+
+def _env_bool(primary_key: str, aliases: Tuple[str, ...] = (), default: str = "false") -> bool:
+    for key in (primary_key, *aliases):
+        raw = os.getenv(key)
+        if raw is not None and str(raw).strip() != "":
+            return _to_bool(raw)
+    return _to_bool(default)
 
 
 def _run_cmd(cmd: List[str]) -> str:
@@ -200,8 +217,9 @@ def main() -> None:
     parser.add_argument("--mode", choices=["production", "backtest"], default="production")
     args = parser.parse_args()
 
+    _load_runtime_env()
     enabled_key = "ASTER_EMAIL_PROD_ENABLE" if args.mode == "production" else "ASTER_EMAIL_BACKTEST_ENABLE"
-    enabled = _norm_bool(os.getenv(enabled_key, "false"))
+    enabled = _env_bool(enabled_key, aliases=(f"{enabled_key}D",), default="false")
     if not enabled:
         print(f"[EMAIL] {enabled_key}=false; skipping report.")
         return
