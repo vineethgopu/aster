@@ -25,6 +25,8 @@ This repository contains:
 │   ├── backtest.py
 │   ├── config_grid.json
 │   └── backtest_inputs.csv
+├── analysis/
+│   └── sample_analysis.ipynb
 ├── deploy/
 │   └── gce/
 │       ├── aster-daily-restart.service
@@ -38,6 +40,7 @@ This repository contains:
 │       ├── bq_load_logs.py
 │       ├── cleanup_old_logs.py
 │       ├── daily_batch_and_cleanup.sh
+│       ├── daily_update_and_restart.sh
 │       ├── email_daily_report.py
 │       ├── env.sample
 │       ├── fetch_secrets.sh
@@ -480,7 +483,11 @@ This schedules:
   - stop `aster.service`
   - load same-day CSVs into BigQuery
   - delete local CSVs older than 7 days
-- Restart at `00:00 UTC`
+- Update + restart at `00:00 UTC`:
+  - `git pull --ff-only`
+  - run `bootstrap.sh`
+  - install Python deps from `requirements.txt`
+  - sync systemd unit files + restart `aster.service`
 
 ```bash
 sudo cp /opt/aster/deploy/gce/aster-daily-stop.service /etc/systemd/system/aster-daily-stop.service
@@ -649,6 +656,7 @@ Use this when deployment scripts or service wiring changed:
 - `deploy/gce/bq_load_logs.py`
 - `deploy/gce/cleanup_old_logs.py`
 - `deploy/gce/daily_batch_and_cleanup.sh`
+- `deploy/gce/daily_update_and_restart.sh`
 - `deploy/gce/fetch_secrets.sh`
 - `deploy/gce/run_strategy.sh`
 - `deploy/gce/toggle_production.sh`
@@ -715,12 +723,27 @@ journalctl -u aster -n 200 --no-pager
 ls -lh /opt/aster/logs
 ```
 
-## BigQuery Adhoc Queries (Jupyter)
+## BigQuery Adhoc Queries (VSCode Notebook)
 
 Install notebook deps in your local env:
 ```bash
-pip install google-cloud-bigquery pandas-gbq
+pip install -r requirements.txt
+python -m ipykernel install --user --name aster --display-name "Python (aster)"
 ```
+
+Open the notebook in VSCode (no Jupyter server launch needed):
+```bash
+code analysis/sample_analysis.ipynb
+```
+
+In VSCode:
+- Use the Jupyter extension
+- Select kernel `Python (aster)` for the notebook
+
+`analysis/sample_analysis.ipynb` includes a parameterized BigQuery query for:
+- `BTCUSDT`
+- `date = 2026-02-23`
+- table: `<PROJECT_ID>.aster.book_ticker`
 
 Example notebook code:
 ```python
@@ -764,7 +787,7 @@ WHERE date = DATE('2026-02-22')
 GROUP BY date, symbol
 ORDER BY symbol
 """
-pd.read_gbq(sql, project_id="<PROJECT_ID>")
+client.query(sql).to_dataframe(create_bqstorage_client=False)
 ```
 
 ## Notes
@@ -777,3 +800,4 @@ pd.read_gbq(sql, project_id="<PROJECT_ID>")
 - Live and backtest flows are intentionally separated:
   - `core/*` for streaming + execution
   - `backtest/*` for offline evaluation
+  - `analysis/*` for exploratory notebooks

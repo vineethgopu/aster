@@ -8,3 +8,13 @@ numpy
 pandas
 vectorbt
 google-cloud-bigquery
+
+# Analysis notebooks (local research workflows)
+db-dtypes
+pyarrow
+polars
+matplotlib
+seaborn
+statsmodels
+jupyterlab
+ipykernel

@@ -75,6 +75,7 @@ chmod +x \
   "$APP_DIR/deploy/gce/run_strategy.sh" \
   "$APP_DIR/deploy/gce/fetch_secrets.sh" \
   "$APP_DIR/deploy/gce/daily_batch_and_cleanup.sh" \
+  "$APP_DIR/deploy/gce/daily_update_and_restart.sh" \
   "$APP_DIR/deploy/gce/email_daily_report.py" \
   "$APP_DIR/deploy/gce/toggle_production.sh" \
   "$APP_DIR/deploy/gce/backtest/run_backtest.sh"

@@ -1,6 +1,7 @@
 [Unit]
-Description=Restart Aster Strategy After Daily Maintenance Window
+Description=Update + Restart Aster Strategy After Daily Maintenance Window
 
 [Service]
 Type=oneshot
-ExecStart=/bin/systemctl restart aster.service
+ExecStart=/opt/aster/deploy/gce/daily_update_and_restart.sh
+TimeoutStartSec=1800
