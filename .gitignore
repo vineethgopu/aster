@@ -16,3 +16,8 @@ venv/
 # Your project stuff (based on screenshot)
 secret.txt
 api.txt
+
+# Generated market/backtest artifacts
+logs/*.csv
+backtest/*.csv
+backtest/results/*.csv
