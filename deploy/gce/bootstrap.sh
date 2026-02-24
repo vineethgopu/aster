@@ -34,7 +34,10 @@ fi
 # - .secrets for short-lived secret files
 # - /var/log/aster reserved for optional file logs
 mkdir -p "$APP_DIR" "$APP_DIR/logs" "$APP_DIR/.secrets" /var/log/aster
-chown -R "$APP_USER:$APP_USER" "$APP_DIR" /var/log/aster
+# IMPORTANT: do not chown the whole repo tree.
+# Keep source/.git ownership with deploy user to avoid git permission churn.
+# Only runtime-write directories are owned by APP_USER.
+chown -R "$APP_USER:$APP_USER" "$APP_DIR/logs" "$APP_DIR/.secrets" /var/log/aster
 chmod 700 "$APP_DIR/.secrets"
 
 # Guardrail: fail fast if repo is not present at APP_DIR.
@@ -47,6 +50,8 @@ fi
 if [[ ! -d "$APP_DIR/.venv" ]]; then
   sudo -u "$APP_USER" "$PYTHON_BIN" -m venv "$APP_DIR/.venv"
 fi
+# Ensure runtime user can update venv packages even if venv pre-existed.
+chown -R "$APP_USER:$APP_USER" "$APP_DIR/.venv"
 
 # Keep installer tooling fresh for faster/more reliable wheel installs.
 sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install --upgrade pip wheel
@@ -57,6 +62,7 @@ if [[ ! -d "$CONNECTOR_DIR/.git" ]]; then
   sudo -u "$APP_USER" mkdir -p "$(dirname "$CONNECTOR_DIR")"
   sudo -u "$APP_USER" git clone "$CONNECTOR_REPO" "$CONNECTOR_DIR"
 else
+  chown -R "$APP_USER:$APP_USER" "$CONNECTOR_DIR"
   sudo -u "$APP_USER" git -C "$CONNECTOR_DIR" fetch --all --tags
   sudo -u "$APP_USER" git -C "$CONNECTOR_DIR" pull --ff-only || true
 fi

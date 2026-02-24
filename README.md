@@ -472,10 +472,11 @@ sudo nano deploy/gce/aster.env
 # - ASTER_BQ_DATASET=aster
 # - ASTER_LOG_RETENTION_DAYS=7
 
-# bootstrap chowns /opt/aster to service user (aster). Reclaim git metadata
-# ownership for your SSH user to avoid "dubious ownership" on future pulls.
-sudo chown -R "$USER":"$USER" /opt/aster/.git
-git config --global --add safe.directory /opt/aster
+# Ownership model (important):
+# - keep code + .git owned by your deploy/SSH user
+# - runtime-write dirs are owned by service user "aster":
+#   /opt/aster/logs, /opt/aster/.secrets, /opt/aster/.venv, /opt/aster/vendor
+# This avoids recurring git permission churn after maintenance runs.
 ```
 
 ### 4) Install and start systemd service
@@ -682,11 +683,6 @@ cd /opt/aster
 git pull --ff-only
 sudo bash /opt/aster/deploy/gce/bootstrap.sh
 
-# bootstrap resets ownership to service user; restore git metadata ownership
-# for your deploy user before the next git operation.
-sudo chown -R "$USER":"$USER" /opt/aster/.git
-git config --global --add safe.directory /opt/aster
-
 sudo cp /opt/aster/deploy/gce/aster.service /etc/systemd/system/aster.service
 sudo cp /opt/aster/deploy/gce/aster-daily-stop.service /etc/systemd/system/aster-daily-stop.service
 sudo cp /opt/aster/deploy/gce/aster-daily-stop.timer /etc/systemd/system/aster-daily-stop.timer
@@ -700,6 +696,11 @@ sudo systemctl daemon-reload
 sudo systemctl restart aster
 sudo systemctl status aster --no-pager
 ```
+
+Ownership note:
+- `bootstrap.sh` no longer `chown -R`s the whole repo.
+- It only adjusts runtime-write paths for `aster` and leaves source + `.git` ownership intact.
+- `daily_update_and_restart.sh` pulls as the repo owner (deploy user), not root.
 
 If only runtime params changed (`deploy/gce/aster.env`), just edit env and restart:
 ```bash

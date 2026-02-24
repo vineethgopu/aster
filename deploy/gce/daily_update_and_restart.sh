@@ -27,13 +27,18 @@ if [[ ! -d "$APP_DIR/.git" ]]; then
   exit 1
 fi
 
-# Capture current git metadata owner so bootstrap's broad chown does not
-# permanently block your deploy user from manual git operations.
-GIT_UID="$(stat -c '%u' "$APP_DIR/.git" 2>/dev/null || echo 0)"
-GIT_GID="$(stat -c '%g' "$APP_DIR/.git" 2>/dev/null || echo 0)"
+# Pull as the current repo owner to keep source/.git ownership stable.
+DEPLOY_USER="$(stat -c '%U' "$APP_DIR/.git" 2>/dev/null || true)"
+if [[ -z "$DEPLOY_USER" || "$DEPLOY_USER" == "UNKNOWN" ]]; then
+  DEPLOY_USER="$SUDO_USER"
+fi
+if [[ -z "$DEPLOY_USER" ]]; then
+  echo "[DAILY_RESTART] Could not determine deploy user for git pull."
+  exit 1
+fi
 
 echo "[DAILY_RESTART] Pulling latest repo changes..."
-git -C "$APP_DIR" -c safe.directory="$APP_DIR" pull --ff-only
+sudo -u "$DEPLOY_USER" git -C "$APP_DIR" -c safe.directory="$APP_DIR" pull --ff-only
 
 echo "[DAILY_RESTART] Running bootstrap..."
 bash "$APP_DIR/deploy/gce/bootstrap.sh"
@@ -45,12 +50,6 @@ fi
 
 echo "[DAILY_RESTART] Installing Python dependencies from requirements.txt..."
 sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install -r "$APP_DIR/requirements.txt"
-
-echo "[DAILY_RESTART] Restoring git metadata ownership..."
-chown -R "$GIT_UID:$GIT_GID" "$APP_DIR/.git" || true
-
-# Keep safe.directory on root profile to avoid git safety blocks in this unit.
-git config --global --add safe.directory "$APP_DIR" || true
 
 echo "[DAILY_RESTART] Syncing systemd unit files..."
 cp "$APP_DIR/deploy/gce/aster.service" /etc/systemd/system/aster.service
