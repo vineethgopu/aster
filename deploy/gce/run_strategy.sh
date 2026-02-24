@@ -54,6 +54,7 @@ exec python main.py \
   --trailing_callback_bps "${ASTER_TRAILING_CALLBACK_BPS:-6.0}" \
   --min_take_profit_gap_bps "${ASTER_MIN_TAKE_PROFIT_GAP_BPS:-4.0}" \
   --margin_safety_multiple "${ASTER_MARGIN_SAFETY_MULTIPLE:-1.2}" \
+  --daily_drawdown_blocker_pct "${ASTER_DAILY_DRAWDOWN_BLOCKER_PCT:-5.0}" \
   --reentry_cooldown_min "${ASTER_REENTRY_COOLDOWN_MIN:-10}" \
   --entry_halt_utc "${ASTER_ENTRY_HALT_UTC:-23:00}" \
   --force_exit_utc "${ASTER_FORCE_EXIT_UTC:-23:50}"

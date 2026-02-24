@@ -146,6 +146,8 @@ Risk controls:
 - Margin kill-switch based on safety multiple:
   - `safety_multiple = totalMarginBalance / totalMaintMargin`
   - force close when `<= threshold` (default 1.2)
+- Daily drawdown guard helper:
+  - reads `totalMarginBalance` for intraday equity tracking
 
 Startup account setup helper:
 - `ensure_risk_setup(symbols, leverage=10, margin_type="ISOLATED")`
@@ -163,6 +165,11 @@ Flow:
 3. If trading enabled, apply leverage + margin setup for all symbols
 4. Start WS subscriptions
 5. Every second:
+   - refresh daily equity state from `totalMarginBalance`
+   - compute full-day drawdown from intraday peak
+   - if drawdown >= `daily_drawdown_blocker_pct` (default 5%):
+     - block all new entries for the rest of UTC day
+     - force-close any open positions
    - build symbol snapshot from client caches
    - optionally write CSV logs (`--update_logs`)
    - run strategy on closed 1m bars
@@ -454,6 +461,9 @@ sudo nano deploy/gce/aster.env
 # Daily trading schedule (UTC):
 # - No new entries after ASTER_ENTRY_HALT_UTC (default 23:00)
 # - Force-close positions after ASTER_FORCE_EXIT_UTC (default 23:50)
+# - Full-day drawdown blocker:
+#   - ASTER_DAILY_DRAWDOWN_BLOCKER_PCT=5.0 (blocks entries + flattens positions
+#     once intraday drawdown from peak reaches threshold)
 # These defaults align with the optional daily maintenance timers below.
 
 # Daily data pipeline:

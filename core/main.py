@@ -5,7 +5,7 @@ import time
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 from dotenv import load_dotenv
 
 from client import AsterClient
@@ -73,6 +73,7 @@ if __name__ == "__main__":
     parser.add_argument("--trailing_callback_bps", type=float, default=6.0)
     parser.add_argument("--min_take_profit_gap_bps", type=float, default=4.0)
     parser.add_argument("--margin_safety_multiple", type=float, default=1.2)
+    parser.add_argument("--daily_drawdown_blocker_pct", type=float, default=5.0)
     parser.add_argument("--reentry_cooldown_min", type=int, default=10)
 
     # Daily UTC schedule controls (used for maintenance windows/restarts).
@@ -92,6 +93,8 @@ if __name__ == "__main__":
         raise ValueError("--trailing_callback_bps must be > 0")
     if args.min_take_profit_gap_bps < 0:
         raise ValueError("--min_take_profit_gap_bps must be >= 0")
+    if args.daily_drawdown_blocker_pct <= 0 or args.daily_drawdown_blocker_pct >= 100:
+        raise ValueError("--daily_drawdown_blocker_pct must be in (0, 100)")
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
     entry_halt_min = _parse_hhmm_utc(args.entry_halt_utc)
@@ -130,11 +133,54 @@ if __name__ == "__main__":
     positions: Dict[str, PositionState] = {}
     cooldown_until_ms: Dict[str, int] = {}
     last_force_exit_attempt_ms: Dict[str, int] = {}
+    daily_balance_day: Optional[str] = None
+    daily_peak_balance: Optional[float] = None
+    daily_last_balance: Optional[float] = None
+    daily_drawdown_frac = 0.0
+    daily_drawdown_blocked = False
+    daily_balance_missing_warned = False
     start = time.time()
     try:
         while (time.time() - start) < args.poll_time and not client._stop_event.is_set():
             ts_ms = _now_ms()
             utc_minute, utc_dt = _utc_minute_of_day(ts_ms)
+            if order_placer is not None:
+                utc_day = utc_dt.date().isoformat()
+                if utc_day != daily_balance_day:
+                    daily_balance_day = utc_day
+                    daily_peak_balance = None
+                    daily_last_balance = None
+                    daily_drawdown_frac = 0.0
+                    daily_drawdown_blocked = False
+                    daily_balance_missing_warned = False
+                    print(f"[RISK_DAY_RESET] utc_day={utc_day}")
+
+                balance_now = order_placer.get_total_margin_balance()
+                if balance_now is not None and balance_now > 0:
+                    daily_last_balance = balance_now
+                    daily_balance_missing_warned = False
+                    if daily_peak_balance is None or balance_now > daily_peak_balance:
+                        daily_peak_balance = balance_now
+                    if daily_peak_balance and daily_peak_balance > 0:
+                        daily_drawdown_frac = max(0.0, (daily_peak_balance - balance_now) / daily_peak_balance)
+                        if (
+                            (not daily_drawdown_blocked)
+                            and daily_drawdown_frac >= (args.daily_drawdown_blocker_pct / 100.0)
+                        ):
+                            daily_drawdown_blocked = True
+                            print(
+                                (
+                                    f"[RISK_BLOCK] daily drawdown triggered "
+                                    f"dd_pct={daily_drawdown_frac * 100.0:.3f} "
+                                    f"threshold_pct={args.daily_drawdown_blocker_pct:.3f} "
+                                    f"peak_balance={daily_peak_balance:.6f} "
+                                    f"current_balance={balance_now:.6f} "
+                                    f"utc_day={utc_day}"
+                                )
+                            )
+                elif not daily_balance_missing_warned:
+                    daily_balance_missing_warned = True
+                    print("[RISK_WARN] could not read totalMarginBalance; daily drawdown blocker is inactive until balance is available.")
 
             with client._lock:
                 symbol_rows = {}
@@ -178,6 +224,26 @@ if __name__ == "__main__":
 
                 pos = positions.get(sym)
                 if pos is not None:
+                    if daily_drawdown_blocked:
+                        last_attempt = last_force_exit_attempt_ms.get(sym, 0)
+                        if ts_ms - last_attempt >= 10_000:
+                            last_force_exit_attempt_ms[sym] = ts_ms
+                            exit_res = order_placer.close_position(
+                                pos=pos,
+                                price_source=client,
+                                reason="DAILY_DRAWDOWN_BLOCK",
+                                notes=(
+                                    f"dd_pct={daily_drawdown_frac * 100.0:.4f} >= "
+                                    f"{args.daily_drawdown_blocker_pct:.4f}"
+                                ),
+                            )
+                            print(f"[EXIT] {sym} {exit_res}")
+                            if exit_res.ok:
+                                order_placer.cancel_sibling_exit_orders(pos)
+                                del positions[sym]
+                                cooldown_until_ms[sym] = ts_ms + args.reentry_cooldown_min * 60_000
+                        continue
+
                     # Daily maintenance window: force-close any open position by cutoff.
                     if utc_minute >= force_exit_min:
                         last_attempt = last_force_exit_attempt_ms.get(sym, 0)
@@ -222,6 +288,41 @@ if __name__ == "__main__":
 
                 # If local state is empty but exchange still has position, ensure we flatten
                 # before the daily restart window.
+                if daily_drawdown_blocked:
+                    live_amt = order_placer.get_position_amt(sym)
+                    if live_amt is not None and abs(live_amt) > 0:
+                        last_attempt = last_force_exit_attempt_ms.get(sym, 0)
+                        if ts_ms - last_attempt >= 10_000:
+                            last_force_exit_attempt_ms[sym] = ts_ms
+                            temp_pos = PositionState(
+                                symbol=sym,
+                                side=("BUY" if live_amt > 0 else "SELL"),
+                                qty=abs(live_amt),
+                                entry_vwap_px=0.0,
+                                opened_time_ms=ts_ms,
+                            )
+                            exit_res = order_placer.close_position(
+                                pos=temp_pos,
+                                price_source=client,
+                                reason="DAILY_DRAWDOWN_BLOCK",
+                                notes=(
+                                    f"dd_pct={daily_drawdown_frac * 100.0:.4f} >= "
+                                    f"{args.daily_drawdown_blocker_pct:.4f}"
+                                ),
+                            )
+                            print(f"[EXIT] {sym} {exit_res}")
+                            if exit_res.ok:
+                                cooldown_until_ms[sym] = ts_ms + args.reentry_cooldown_min * 60_000
+                        continue
+                    print(
+                        (
+                            f"[ENTRY_BLOCKED] {sym} daily_drawdown_blocker active "
+                            f"dd_pct={daily_drawdown_frac * 100.0:.4f} "
+                            f"threshold_pct={args.daily_drawdown_blocker_pct:.4f}"
+                        )
+                    )
+                    continue
+
                 if utc_minute >= force_exit_min:
                     live_amt = order_placer.get_position_amt(sym)
                     if live_amt is not None and abs(live_amt) > 0:

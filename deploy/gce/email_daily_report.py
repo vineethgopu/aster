@@ -15,6 +15,20 @@ import pandas as pd
 from aster.rest_api import Client as AsterRestClient
 from dotenv import load_dotenv
 
+try:
+    from google.cloud import bigquery
+except Exception:  # pragma: no cover - optional runtime dependency.
+    bigquery = None  # type: ignore[assignment]
+
+
+BQ_LOG_TABLES: List[Tuple[str, str]] = [
+    ("kline", "kline"),
+    ("bookTicker", "book_ticker"),
+    ("markPrice", "mark_price"),
+    ("aggTrade_1s", "agg_trade_1s"),
+    ("depth5", "depth5"),
+]
+
 
 def _to_bool(v: str) -> bool:
     return str(v).strip().lower() == "true"
@@ -167,6 +181,81 @@ def _runtime_issue_summary() -> str:
     return "\n".join(out)
 
 
+def _bq_logs_summary() -> str:
+    enabled = _env_bool("ASTER_BQ_ENABLE_DAILY_BATCH", default="false")
+    if not enabled:
+        return "ASTER_BQ_ENABLE_DAILY_BATCH=false"
+    if bigquery is None:
+        return "google-cloud-bigquery package is unavailable in runtime environment."
+
+    project = (os.getenv("ASTER_BQ_PROJECT", "") or os.getenv("GOOGLE_CLOUD_PROJECT", "")).strip()
+    dataset = os.getenv("ASTER_BQ_DATASET", "aster").strip()
+    location = os.getenv("ASTER_BQ_LOCATION", "").strip()
+    if not project:
+        return "Missing ASTER_BQ_PROJECT/GOOGLE_CLOUD_PROJECT for BigQuery summary."
+    if not dataset:
+        return "Missing ASTER_BQ_DATASET for BigQuery summary."
+
+    lines: List[str] = [
+        f"project={project}",
+        f"dataset={dataset}",
+        f"location={location or '(default)'}",
+    ]
+
+    batch_status = _run_cmd(
+        [
+            "systemctl",
+            "show",
+            "aster-daily-stop.service",
+            "--property=ActiveState,SubState,Result,ExecMainStatus",
+            "--no-page",
+        ]
+    )
+    lines.append(f"batch_service_status={batch_status}")
+
+    batch_journal = _run_cmd(
+        ["journalctl", "-u", "aster-daily-stop.service", "--since", "30 hours ago", "--no-pager", "-o", "cat"]
+    )
+    if not batch_journal.startswith("ERROR("):
+        lines.append(f"batch_done_lines_last_30h={batch_journal.count('[DONE]')}")
+        lines.append(f"batch_summary_lines_last_30h={batch_journal.count('[SUMMARY]')}")
+        batch_error_lines = len(re.findall(r"\bERROR\b", batch_journal, flags=re.IGNORECASE))
+        lines.append(f"batch_error_lines_last_30h={batch_error_lines}")
+
+    try:
+        client = bigquery.Client(project=project, location=(location or None))
+    except Exception as e:
+        lines.append(f"bigquery_client_error={e}")
+        return "\n".join(lines)
+
+    lines.append("table,max_partition_date,row_count")
+    for _, table_name in BQ_LOG_TABLES:
+        table_id = f"`{project}.{dataset}.{table_name}`"
+        try:
+            max_date_sql = f"SELECT MAX(date) AS max_date FROM {table_id}"
+            max_date_job = client.query(max_date_sql)
+            max_date_row = next(iter(max_date_job.result()), None)
+            max_date = None if max_date_row is None else max_date_row["max_date"]
+            if max_date is None:
+                lines.append(f"{table_name},NONE,0")
+                continue
+
+            count_sql = f"SELECT COUNT(1) AS n FROM {table_id} WHERE date=@d"
+            count_job = client.query(
+                count_sql,
+                job_config=bigquery.QueryJobConfig(
+                    query_parameters=[bigquery.ScalarQueryParameter("d", "DATE", max_date)]
+                ),
+            )
+            count_row = next(iter(count_job.result()), None)
+            n_rows = 0 if count_row is None else int(count_row["n"])
+            lines.append(f"{table_name},{max_date},{n_rows}")
+        except Exception as e:
+            lines.append(f"{table_name},ERROR,{e}")
+
+    return "\n".join(lines)
+
+
 def _top10_backtest_text(ranked_csv: Path) -> str:
     if not ranked_csv.exists():
         return f"Backtest ranked file missing: {ranked_csv}"
@@ -244,6 +333,8 @@ def main() -> None:
             f"{_service_summary()}\n\n"
             "=== Trade Summary (per symbol, today UTC) ===\n"
             f"{_prod_trade_summary()}\n\n"
+            "=== BigQuery Log Batch Summary ===\n"
+            f"{_bq_logs_summary()}\n\n"
             "=== Runtime Issues (last 24h) ===\n"
             f"{_runtime_issue_summary()}\n"
         )
@@ -256,6 +347,8 @@ def main() -> None:
             "Aster Weekly Backtest Report\n\n"
             "=== Backtest Service Status ===\n"
             f"{backtest_status}\n\n"
+            "=== BigQuery Log Batch Summary ===\n"
+            f"{_bq_logs_summary()}\n\n"
             "=== Top 10 Backtest Configs By Symbol ===\n"
             f"{_top10_backtest_text(ranked_csv)}\n"
         )

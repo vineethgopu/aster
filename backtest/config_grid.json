@@ -4,18 +4,82 @@
   "fee_bps": 4.0,
   "slippage_bps": 0.0,
   "symbols": {
+    "BTCUSDT": {
+      "params": {
+        "k": [1.2, 1.4, 1.6, 1.8, 2.0],
+        "T": [10, 30, 60],
+        "n": [1.2, 1.4, 1.6, 1.8, 2.0],
+        "V": [10, 30, 60],
+        "tp_bps": [15, 18, 21, 24, 27, 30],
+        "sl_bps": [10, 12, 14, 16, 18],
+        "activation_bps": [10, 11, 12, 13, 14],
+        "activation_buffer_bps": [0.5],
+        "callback_bps": [2, 4, 6],
+        "min_tp_gap_bps": [4],
+        "spread_max": [0.2],
+        "funding_max": [1.5]
+      }
+    },
     "ETHUSDT": {
       "params": {
-        "k": [1.0, 1.5],
-        "T": [30],
-        "n": [1.3],
-        "V": [30],
-        "tp_bps": [20.0],
-        "sl_bps": [12.0],
-        "activation_bps": [8.0],
+        "k": [1.2, 1.4, 1.6, 1.8, 2.0],
+        "T": [10, 30, 60],
+        "n": [1.2, 1.4, 1.6, 1.8, 2.0],
+        "V": [10, 30, 60],
+        "tp_bps": [15, 18, 21, 24, 27, 30],
+        "sl_bps": [10, 12, 14, 16, 18],
+        "activation_bps": [10, 11, 12, 13, 14],
         "activation_buffer_bps": [0.5],
-        "callback_bps": [6.0],
-        "min_tp_gap_bps": [4.0],
+        "callback_bps": [2, 4, 6],
+        "min_tp_gap_bps": [4],
+        "spread_max": [0.2],
+        "funding_max": [1.5]
+      }
+    },
+    "SOLUSDT": {
+      "params": {
+        "k": [1.2, 1.4, 1.6, 1.8, 2.0],
+        "T": [10, 30, 60],
+        "n": [1.2, 1.4, 1.6, 1.8, 2.0],
+        "V": [10, 30, 60],
+        "tp_bps": [15, 18, 21, 24, 27, 30],
+        "sl_bps": [10, 12, 14, 16, 18],
+        "activation_bps": [10, 11, 12, 13, 14],
+        "activation_buffer_bps": [0.5],
+        "callback_bps": [2, 4, 6],
+        "min_tp_gap_bps": [4],
+        "spread_max": [0.2],
+        "funding_max": [1.5]
+      }
+    },
+    "BNBUSDT": {
+      "params": {
+        "k": [1.2, 1.4, 1.6, 1.8, 2.0],
+        "T": [10, 30, 60],
+        "n": [1.2, 1.4, 1.6, 1.8, 2.0],
+        "V": [10, 30, 60],
+        "tp_bps": [15, 18, 21, 24, 27, 30],
+        "sl_bps": [10, 12, 14, 16, 18],
+        "activation_bps": [10, 11, 12, 13, 14],
+        "activation_buffer_bps": [0.5],
+        "callback_bps": [2, 4, 6],
+        "min_tp_gap_bps": [4],
+        "spread_max": [0.2],
+        "funding_max": [1.5]
+      }
+    },
+    "XRPUSDT": {
+      "params": {
+        "k": [1.2, 1.4, 1.6, 1.8, 2.0],
+        "T": [10, 30, 60],
+        "n": [1.2, 1.4, 1.6, 1.8, 2.0],
+        "V": [10, 30, 60],
+        "tp_bps": [15, 18, 21, 24, 27, 30],
+        "sl_bps": [10, 12, 14, 16, 18],
+        "activation_bps": [10, 11, 12, 13, 14],
+        "activation_buffer_bps": [0.5],
+        "callback_bps": [2, 4, 6],
+        "min_tp_gap_bps": [4],
         "spread_max": [0.2],
         "funding_max": [1.5]
       }

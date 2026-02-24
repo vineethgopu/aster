@@ -770,6 +770,24 @@ class OrderPlacer:
             return None
         return abs(amt)
 
+    def get_total_margin_balance(self) -> Optional[float]:
+        """
+        Returns account totalMarginBalance (USDT) when available.
+        """
+        try:
+            acct = self.rest.account(recvWindow=max(self.recv_window_ms, 6000))
+        except ClientError as e:
+            self.log.warning(f"[ACCOUNT] account() failed: {getattr(e,'error_message',str(e))}")
+            return None
+
+        if not isinstance(acct, dict):
+            return None
+        d = acct.get("data") if isinstance(acct.get("data"), dict) else acct
+        mb = _safe_float(d.get("totalMarginBalance"))
+        if mb is None:
+            return None
+        return float(mb)
+
     def cancel_sibling_exit_orders(self, pos: PositionState) -> None:
         order_ids = [
             pos.take_profit_order_id,
