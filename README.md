@@ -19,7 +19,8 @@ This repository contains:
 │   ├── bookTicker_YYYYMMDD.csv
 │   ├── markPrice_YYYYMMDD.csv
 │   ├── aggTrade_1s_YYYYMMDD.csv
-│   └── depth5_YYYYMMDD.csv
+│   ├── depth5_YYYYMMDD.csv
+│   └── orders_YYYYMMDD.csv
 ├── backtest/
 │   ├── build_backtest_inputs.py
 │   ├── backtest.py
@@ -158,6 +159,7 @@ Cleanup helper:
 ### `core/main.py`
 Purpose:
 - Runtime orchestrator for polling, strategy evaluation, and optional live trading
+- Appends trade lifecycle rows to `logs/orders_YYYYMMDD.csv` on each completed exit
 
 Flow:
 1. Parse CLI params
@@ -436,6 +438,47 @@ CREATE TABLE IF NOT EXISTS `<PROJECT_ID>.aster.depth5` (
 )
 PARTITION BY date
 CLUSTER BY symbol, hour, minute, second;
+
+CREATE TABLE IF NOT EXISTS `<PROJECT_ID>.aster.orders` (
+  exit_fill_time_ms INT64,
+  exit_fill_time_utc STRING,
+  symbol STRING,
+  entry_order_id INT64,
+  exit_order_id INT64,
+  exit_reason STRING,
+  exit_send_time_ms INT64,
+  exit_send_time_utc STRING,
+  entry_send_time_ms INT64,
+  entry_send_time_utc STRING,
+  entry_fill_time_ms INT64,
+  entry_fill_time_utc STRING,
+  entry_fill_price NUMERIC(20, 6),
+  fill_quantity NUMERIC(20, 6),
+  fill_notional NUMERIC(20, 6),
+  exit_fill_price NUMERIC(20, 6),
+  raw_return_pct NUMERIC(20, 6),
+  position_return_pct NUMERIC(20, 6),
+  order_lifetime_market_volume_quantity NUMERIC(20, 6),
+  order_lifetime_market_volume_notional NUMERIC(20, 6),
+  order_lifetime_open NUMERIC(20, 6),
+  order_lifetime_high NUMERIC(20, 6),
+  order_lifetime_low NUMERIC(20, 6),
+  order_lifetime_close NUMERIC(20, 6),
+  order_lifetime_vwap NUMERIC(20, 6),
+  order_duration_s NUMERIC(20, 6),
+  entry_mark_price NUMERIC(20, 6),
+  exit_mark_price NUMERIC(20, 6),
+  mark_price_change_bps NUMERIC(20, 6),
+  fees_notional NUMERIC(20, 6),
+  gross_pnl_notional NUMERIC(20, 6),
+  total_pnl_notional NUMERIC(20, 6),
+  date DATE,
+  hour INT64,
+  minute INT64,
+  second INT64
+)
+PARTITION BY date
+CLUSTER BY symbol, exit_reason, hour, minute, second;
 ```
 
 ### 3) Prepare VM and app runtime

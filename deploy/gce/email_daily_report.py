@@ -27,6 +27,7 @@ BQ_LOG_TABLES: List[Tuple[str, str]] = [
     ("markPrice", "mark_price"),
     ("aggTrade_1s", "agg_trade_1s"),
     ("depth5", "depth5"),
+    ("orders", "orders"),
 ]
 
 
@@ -105,6 +106,59 @@ def _resolve_email_smtp_pass() -> str:
     return ""
 
 
+def _trade_duration_stats(start_ms: int, end_ms: int) -> Dict[str, Dict[str, float]]:
+    log_dir = Path(os.getenv("ASTER_LOG_DIR", "/opt/aster/logs"))
+    if not log_dir.exists():
+        return {}
+
+    day_start = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc).strftime("%Y%m%d")
+    day_end = datetime.fromtimestamp(end_ms / 1000, tz=timezone.utc).strftime("%Y%m%d")
+    day_keys = {day_start, day_end}
+
+    frames: List[pd.DataFrame] = []
+    for day in sorted(day_keys):
+        p = log_dir / f"orders_{day}.csv"
+        if not p.exists():
+            continue
+        try:
+            df = pd.read_csv(p)
+        except Exception:
+            continue
+        if df.empty or "symbol" not in df.columns or "order_duration_s" not in df.columns:
+            continue
+        if "ts_unix_ms" in df.columns:
+            ts = pd.to_numeric(df["ts_unix_ms"], errors="coerce")
+            df = df[(ts >= start_ms) & (ts <= end_ms)]
+        elif "exit_fill_time_ms" in df.columns:
+            ts = pd.to_numeric(df["exit_fill_time_ms"], errors="coerce")
+            df = df[(ts >= start_ms) & (ts <= end_ms)]
+        elif "exit_exec_time_ms" in df.columns:
+            # Backward compatibility for pre-rename files.
+            ts = pd.to_numeric(df["exit_exec_time_ms"], errors="coerce")
+            df = df[(ts >= start_ms) & (ts <= end_ms)]
+        frames.append(df)
+
+    if not frames:
+        return {}
+
+    all_df = pd.concat(frames, ignore_index=True)
+    if all_df.empty:
+        return {}
+    all_df["order_duration_s"] = pd.to_numeric(all_df["order_duration_s"], errors="coerce")
+    all_df = all_df.dropna(subset=["symbol", "order_duration_s"])
+    if all_df.empty:
+        return {}
+
+    out: Dict[str, Dict[str, float]] = {}
+    grouped = all_df.groupby(all_df["symbol"].astype(str))
+    for sym, g in grouped:
+        out[str(sym).upper()] = {
+            "avg_order_duration_s": float(g["order_duration_s"].mean()),
+            "n_closed_trades": float(len(g)),
+        }
+    return out
+
+
 def _prod_trade_summary() -> str:
     secret_dir = Path(os.getenv("ASTER_SECRET_DIR", "/opt/aster/.secrets"))
     api_key_path = secret_dir / "api_key"
@@ -124,22 +178,26 @@ def _prod_trade_summary() -> str:
     day_start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
     start_ms = int(day_start.timestamp() * 1000)
     end_ms = int(now.timestamp() * 1000)
+    duration_stats = _trade_duration_stats(start_ms=start_ms, end_ms=end_ms)
 
     lines = [f"trade_window_utc=[{day_start.isoformat()} -> {now.isoformat()}]"]
-    header = "symbol,trades,total_realized_pnl,avg_pnl_per_trade,avg_fee_per_trade"
+    header = "symbol,trades,total_realized_pnl,avg_pnl_per_trade,avg_fee_per_trade,avg_order_duration_s,n_closed_trades"
     lines.append(header)
 
     for sym in symbols:
+        dur = duration_stats.get(sym, {})
+        avg_dur = dur.get("avg_order_duration_s")
+        n_closed = int(dur.get("n_closed_trades") or 0)
         try:
             resp = rest.get_account_trades(symbol=sym, startTime=start_ms, endTime=end_ms, recvWindow=6000)
             rows = _parse_resp_rows(resp)
         except Exception as e:
-            lines.append(f"{sym},ERROR,{e},,")
+            lines.append(f"{sym},ERROR,{e},,,{avg_dur if avg_dur is not None else ''},{n_closed}")
             continue
 
         n = len(rows)
         if n == 0:
-            lines.append(f"{sym},0,0.0,0.0,0.0")
+            lines.append(f"{sym},0,0.0,0.0,0.0,{avg_dur if avg_dur is not None else 0.0},{n_closed}")
             continue
 
         rpnl = []
@@ -157,7 +215,8 @@ def _prod_trade_summary() -> str:
         total_rpnl = float(sum(rpnl))
         avg_rpnl = total_rpnl / n
         avg_fee = float(sum(commissions)) / n
-        lines.append(f"{sym},{n},{total_rpnl:.8f},{avg_rpnl:.8f},{avg_fee:.8f}")
+        avg_dur_s = f"{avg_dur:.6f}" if avg_dur is not None else ""
+        lines.append(f"{sym},{n},{total_rpnl:.8f},{avg_rpnl:.8f},{avg_fee:.8f},{avg_dur_s},{n_closed}")
     return "\n".join(lines)
 
 

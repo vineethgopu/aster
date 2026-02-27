@@ -743,6 +743,115 @@ class OrderPlacer:
             payload["origClientOrderId"] = str(orig_client_order_id)
         return self.rest.sign_request("DELETE", "/fapi/v1/order", payload)
 
+    def get_order_trade_rows(
+        self,
+        symbol: str,
+        order_id: Optional[int],
+        start_time_ms: Optional[int] = None,
+        end_time_ms: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Return account trade rows (fills) for a specific order when available.
+        """
+        if order_id is None:
+            return []
+        params: Dict[str, Any] = {"symbol": symbol, "orderId": int(order_id), "recvWindow": max(self.recv_window_ms, 6000)}
+        if start_time_ms is not None and start_time_ms > 0:
+            params["startTime"] = int(start_time_ms)
+        if end_time_ms is not None and end_time_ms > 0:
+            params["endTime"] = int(end_time_ms)
+        try:
+            resp = self.rest.get_account_trades(**params)
+        except Exception as e:
+            self.log.info(f"[ORDER_TRADES] get_account_trades failed for {symbol} order_id={order_id}: {e}")
+            return []
+        data = resp.get("data") if isinstance(resp, dict) else resp
+        if isinstance(data, list):
+            return [x for x in data if isinstance(x, dict)]
+        if isinstance(resp, list):
+            return [x for x in resp if isinstance(x, dict)]
+        return []
+
+    def get_order_trade_stats(
+        self,
+        symbol: str,
+        order_id: Optional[int],
+        start_time_ms: Optional[int] = None,
+        end_time_ms: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        rows = self.get_order_trade_rows(
+            symbol=symbol,
+            order_id=order_id,
+            start_time_ms=start_time_ms,
+            end_time_ms=end_time_ms,
+        )
+        qty = 0.0
+        notional = 0.0
+        fee = 0.0
+        last_time_ms: Optional[int] = None
+        for r in rows:
+            px = _safe_float(r.get("price"))
+            q = _safe_float(r.get("qty"))
+            cm = _safe_float(r.get("commission"))
+            tm = _safe_float(r.get("time"))
+            if px is not None and q is not None:
+                qty += float(q)
+                notional += float(px) * float(q)
+            if cm is not None:
+                fee += abs(float(cm))
+            if tm is not None:
+                t_int = int(tm)
+                if last_time_ms is None or t_int > last_time_ms:
+                    last_time_ms = t_int
+        avg_px = (notional / qty) if qty > 0 else None
+        return {
+            "order_id": order_id,
+            "executed_qty": qty,
+            "notional": notional,
+            "avg_price": avg_px,
+            "fee": fee,
+            "exec_time_ms": last_time_ms,
+            "rows": rows,
+        }
+
+    def detect_filled_exit_order(self, pos: PositionState) -> Dict[str, Any]:
+        """
+        Detect which armed exit trigger filled first (TP/SL/TSL) from order state.
+        """
+        checks = [
+            ("TP", pos.take_profit_order_id),
+            ("SL", pos.stop_loss_order_id),
+            ("TSL", pos.trailing_stop_order_id),
+        ]
+        for reason, oid in checks:
+            if oid is None:
+                continue
+            try:
+                q = self.query_order(symbol=pos.symbol, order_id=oid)
+                status, filled_qty, avg_px = self._parse_query(q)
+                d = q.get("data") if isinstance(q, dict) and isinstance(q.get("data"), dict) else q
+                update_time = _safe_float(d.get("updateTime")) if isinstance(d, dict) else None
+                if status.upper() == "FILLED" and (filled_qty or 0.0) > 0:
+                    return {
+                        "reason": reason,
+                        "order_id": oid,
+                        "filled_qty": float(filled_qty or 0.0),
+                        "avg_price": avg_px,
+                        "update_time_ms": int(update_time) if update_time is not None else None,
+                        "raw": q,
+                    }
+            except Exception as e:
+                self.log.info(f"[EXIT_DETECT] query failed for {pos.symbol} oid={oid}: {e}")
+                continue
+        return {
+            "reason": "UNKNOWN",
+            "order_id": None,
+            "filled_qty": 0.0,
+            "avg_price": None,
+            "update_time_ms": None,
+            "raw": {},
+        }
+
     def get_position_amt(self, symbol: str) -> Optional[float]:
         """Signed position amount (long > 0, short < 0)."""
         try:

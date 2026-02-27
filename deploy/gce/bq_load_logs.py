@@ -20,6 +20,7 @@ LOG_TABLE_MAP: Dict[str, str] = {
     "markPrice": "mark_price",
     "aggTrade_1s": "agg_trade_1s",
     "depth5": "depth5",
+    "orders": "orders",
 }
 
 DEFAULT_NUMERIC_SCALE_BY_TYPE: Dict[str, int] = {
@@ -56,11 +57,11 @@ def _coerce_dataframe_types(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _append_time_parts(df: pd.DataFrame) -> Tuple[pd.DataFrame, int]:
-    if "ts_unix_ms" not in df.columns:
-        raise ValueError("Input CSV is missing required column ts_unix_ms")
-    ts_unix_ms = pd.to_numeric(df["ts_unix_ms"], errors="coerce")
-    dt = pd.to_datetime(ts_unix_ms, unit="ms", utc=True, errors="coerce")
+def _append_time_parts(df: pd.DataFrame, ts_col: str) -> Tuple[pd.DataFrame, int]:
+    if ts_col not in df.columns:
+        raise ValueError(f"Input CSV is missing required column {ts_col}")
+    ts_values = pd.to_numeric(df[ts_col], errors="coerce")
+    dt = pd.to_datetime(ts_values, unit="ms", utc=True, errors="coerce")
     valid = dt.notna()
     dropped = int((~valid).sum())
 
@@ -106,11 +107,12 @@ def _prepare_logframes(log_dir: Path, date_str: str) -> List[Tuple[str, str, pd.
             print(f"[SKIP] {base_name}: empty file")
             continue
         df = _coerce_dataframe_types(df)
-        df, dropped = _append_time_parts(df)
+        ts_col = "exit_fill_time_ms" if base_name == "orders" else "ts_unix_ms"
+        df, dropped = _append_time_parts(df, ts_col=ts_col)
         if dropped > 0:
-            print(f"[WARN] {base_name}: dropped {dropped} rows with invalid ts_unix_ms")
+            print(f"[WARN] {base_name}: dropped {dropped} rows with invalid {ts_col}")
         if df.empty:
-            print(f"[SKIP] {base_name}: no rows after ts_unix_ms validation")
+            print(f"[SKIP] {base_name}: no rows after {ts_col} validation")
             continue
         prepared.append((base_name, table_name, df))
     return prepared

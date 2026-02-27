@@ -31,15 +31,19 @@ fi
 source "$APP_DIR/.venv/bin/activate"
 cd "$APP_DIR/core"
 
-# exec replaces shell with python process so systemd tracks true PID.
-exec python main.py \
+# Build command dynamically:
+# - order_notional is optional: if omitted, main.py computes default from
+#   start-of-day balance * risk_pct * leverage.
+CMD=(python main.py \
   --symbols "${ASTER_SYMBOLS:-ETHUSDT}" \
   --poll_time "${ASTER_POLL_TIME:-600}" \
   --log_dir "${ASTER_LOG_DIR:-/opt/aster/logs}" \
   --delete_logs "${ASTER_DELETE_LOGS:-false}" \
   --update_logs "${ASTER_UPDATE_LOGS:-true}" \
   --enable_trading "${ASTER_ENABLE_TRADING:-false}" \
-  --order_notional "${ASTER_ORDER_NOTIONAL:-5.0}" \
+  --target_leverage "${ASTER_TARGET_LEVERAGE:-25}" \
+  --risk_pct "${ASTER_RISK_PCT:-1.0}" \
+  --trade_alert_email "${ASTER_EMAIL_TRADE_ALERT_ENABLE:-true}" \
   --k "${ASTER_K:-1.3}" \
   --T "${ASTER_T:-30}" \
   --n "${ASTER_N:-1.3}" \
@@ -57,4 +61,11 @@ exec python main.py \
   --daily_drawdown_blocker_pct "${ASTER_DAILY_DRAWDOWN_BLOCKER_PCT:-5.0}" \
   --reentry_cooldown_min "${ASTER_REENTRY_COOLDOWN_MIN:-10}" \
   --entry_halt_utc "${ASTER_ENTRY_HALT_UTC:-23:00}" \
-  --force_exit_utc "${ASTER_FORCE_EXIT_UTC:-23:50}"
+  --force_exit_utc "${ASTER_FORCE_EXIT_UTC:-23:50}")
+
+if [[ -n "${ASTER_ORDER_NOTIONAL:-}" ]]; then
+  CMD+=(--order_notional "${ASTER_ORDER_NOTIONAL}")
+fi
+
+# exec replaces shell with python process so systemd tracks true PID.
+exec "${CMD[@]}"
