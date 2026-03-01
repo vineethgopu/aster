@@ -345,6 +345,24 @@ def _top10_backtest_text(ranked_csv: Path) -> str:
     return "\n".join(blocks).strip()
 
 
+def _resolve_backtest_ranked_csv() -> Path:
+    configured = os.getenv("ASTER_BACKTEST_RANKED_CSV", "").strip()
+    if configured:
+        return Path(configured)
+
+    results_dir = Path("/opt/aster/backtest/results")
+    if results_dir.exists():
+        candidates = sorted(
+            results_dir.glob("backtest_results_*.csv"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if candidates:
+            return candidates[0]
+
+    return results_dir / "backtest_results.csv"
+
+
 def _send_email(subject_prefix: str, body: str, recipients_env_key: str) -> None:
     smtp_host = os.getenv("ASTER_EMAIL_SMTP_HOST", "").strip()
     smtp_port = int(os.getenv("ASTER_EMAIL_SMTP_PORT", "587"))
@@ -400,7 +418,7 @@ def main() -> None:
         _send_email("Aster Production Report", body, recipients_env_key="ASTER_EMAIL_TO_PROD")
         print("[EMAIL] Production report sent.")
     else:
-        ranked_csv = Path(os.getenv("ASTER_BACKTEST_RANKED_CSV", "/opt/aster/backtest/results/ranked_metrics.csv"))
+        ranked_csv = _resolve_backtest_ranked_csv()
         backtest_status = _run_cmd(["systemctl", "show", "aster-backtest.service", "--property=ActiveState,SubState,Result,ExecMainStatus", "--no-page"])
         body = (
             "Aster Weekly Backtest Report\n\n"

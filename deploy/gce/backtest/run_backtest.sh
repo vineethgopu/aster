@@ -11,10 +11,12 @@ fi
 
 PY_BIN="${APP_DIR}/.venv/bin/python"
 BACKTEST_DIR="${APP_DIR}/backtest"
+RUN_DATE="${ASTER_BACKTEST_RUN_DATE:-$(date -u +%Y%m%d)}"
 CONFIG_FILE="${ASTER_BACKTEST_CONFIG_FILE:-$BACKTEST_DIR/config_grid.json}"
-CONFIG_MAP_CSV="${ASTER_BACKTEST_CONFIG_MAP_CSV:-$BACKTEST_DIR/results/config_mapping.csv}"
-RANKED_OUT="${ASTER_BACKTEST_RANKED_CSV:-$BACKTEST_DIR/results/ranked_metrics.csv}"
-INPUTS_CSV="${ASTER_BACKTEST_INPUTS_CSV:-$BACKTEST_DIR/backtest_inputs.csv}"
+CONFIG_MAP_CSV="${ASTER_BACKTEST_CONFIG_MAP_CSV:-$BACKTEST_DIR/results/backtest_config_${RUN_DATE}.csv}"
+RANKED_OUT="${ASTER_BACKTEST_RANKED_CSV:-$BACKTEST_DIR/results/backtest_results_${RUN_DATE}.csv}"
+INPUTS_CSV="${ASTER_BACKTEST_INPUTS_CSV:-$BACKTEST_DIR/results/backtest_inputs_${RUN_DATE}.csv}"
+COMBINED_INPUTS_RESULTS="${BACKTEST_DIR}/results/backtest_inputs_${RUN_DATE}.csv"
 BUILD_INPUTS="${ASTER_BACKTEST_BUILD_INPUTS:-true}"
 BQ_PROJECT="${ASTER_BQ_PROJECT:-}"
 BQ_DATASET="${ASTER_BQ_DATASET:-aster}"
@@ -23,8 +25,10 @@ QUERY_SYMBOLS="${ASTER_BACKTEST_QUERY_SYMBOLS:-}"
 QUERY_START_DATE="${ASTER_BACKTEST_START_DATE:-}"
 QUERY_END_DATE="${ASTER_BACKTEST_END_DATE:-}"
 QUERY_WINDOWS="${ASTER_BACKTEST_FEATURE_WINDOWS:-10,30,60}"
+UPLOAD_BQ_BACKTEST_RESULTS="${ASTER_BQ_ENABLE_BACKTEST_UPLOAD:-true}"
 EMAIL_ON_COMPLETION="${ASTER_EMAIL_BACKTEST_ON_COMPLETION:-true}"
 CHUNK_SIZE="${ASTER_BACKTEST_CHUNK_SIZE:-1000}"
+BACKTEST_RETENTION_DAYS="${ASTER_BACKTEST_RETENTION_DAYS:-28}"
 
 if [[ ! -x "$PY_BIN" ]]; then
   echo "[BACKTEST] Missing python venv at $PY_BIN"
@@ -67,9 +71,9 @@ for RAW_SYM in "${SYMBOLS_ARR[@]}"; do
     continue
   fi
 
-  SYM_INPUTS="$BACKTEST_DIR/results/backtest_inputs_${SYM}.csv"
-  SYM_CONFIG_MAP="$BACKTEST_DIR/results/config_mapping_${SYM}.csv"
-  SYM_RANKED="$BACKTEST_DIR/results/ranked_metrics_${SYM}.csv"
+  SYM_INPUTS="$BACKTEST_DIR/results/backtest_inputs_${SYM}_${RUN_DATE}.csv"
+  SYM_CONFIG_MAP="$BACKTEST_DIR/results/backtest_config_${SYM}_${RUN_DATE}.csv"
+  SYM_RANKED="$BACKTEST_DIR/results/backtest_results_${SYM}_${RUN_DATE}.csv"
 
   if [[ "$BUILD_INPUTS_NORM" == "true" ]]; then
     echo "[BACKTEST] Building backtest inputs for $SYM from BigQuery..."
@@ -153,7 +157,7 @@ PY
 
 if [[ "$BUILD_INPUTS_NORM" == "true" && "${#INPUT_FILES[@]}" -gt 0 ]]; then
   echo "[BACKTEST] Combining per-symbol input files..."
-  "$PY_BIN" - "$INPUTS_CSV" "${INPUT_FILES[@]}" <<'PY'
+  "$PY_BIN" - "$COMBINED_INPUTS_RESULTS" "${INPUT_FILES[@]}" <<'PY'
 import sys
 from pathlib import Path
 import pandas as pd
@@ -168,13 +172,48 @@ out.parent.mkdir(parents=True, exist_ok=True)
 df.to_csv(out, index=False)
 print(f"[BACKTEST] wrote combined inputs: {out}")
 PY
+
+  if [[ "$INPUTS_CSV" != "$COMBINED_INPUTS_RESULTS" ]]; then
+    mkdir -p "$(dirname "$INPUTS_CSV")" 2>/dev/null || true
+    if cp -f "$COMBINED_INPUTS_RESULTS" "$INPUTS_CSV" 2>/dev/null; then
+      echo "[BACKTEST] copied combined inputs to configured path: $INPUTS_CSV"
+    else
+      echo "[BACKTEST] WARNING: could not copy combined inputs to $INPUTS_CSV; using $COMBINED_INPUTS_RESULTS"
+    fi
+  fi
 fi
 
 echo "[BACKTEST] Done. Ranked output: $RANKED_OUT"
 
+UPLOAD_BQ_BACKTEST_RESULTS_NORM="$(printf '%s' "$UPLOAD_BQ_BACKTEST_RESULTS" | tr '[:upper:]' '[:lower:]')"
+if [[ "$UPLOAD_BQ_BACKTEST_RESULTS_NORM" == "true" ]]; then
+  echo "[BACKTEST] Uploading backtest outputs to BigQuery (delete+insert for date=$RUN_DATE)..."
+  BQ_LOAD_CMD=(
+    "$PY_BIN" "$APP_DIR/deploy/gce/backtest/bq_load_backtest_outputs.py"
+    --dataset "$BQ_DATASET"
+    --date "$RUN_DATE"
+    --results_dir "$BACKTEST_DIR/results"
+  )
+  if [[ -n "$BQ_PROJECT" ]]; then
+    BQ_LOAD_CMD+=(--project "$BQ_PROJECT")
+  fi
+  if [[ -n "$BQ_LOCATION" ]]; then
+    BQ_LOAD_CMD+=(--location "$BQ_LOCATION")
+  fi
+  "${BQ_LOAD_CMD[@]}"
+else
+  echo "[BACKTEST] ASTER_BQ_ENABLE_BACKTEST_UPLOAD=false, skipping backtest BigQuery upload."
+fi
+
+echo "[BACKTEST] Cleaning backtest outputs older than ${BACKTEST_RETENTION_DAYS} days..."
+"$PY_BIN" "$APP_DIR/deploy/gce/backtest/cleanup_old_backtest_outputs.py" \
+  --results_dir "$BACKTEST_DIR/results" \
+  --retention_days "$BACKTEST_RETENTION_DAYS"
+
 EMAIL_ON_COMPLETION_NORM="$(printf '%s' "$EMAIL_ON_COMPLETION" | tr '[:upper:]' '[:lower:]')"
 if [[ "$EMAIL_ON_COMPLETION_NORM" == "true" ]]; then
   echo "[BACKTEST] Sending backtest completion email..."
+  export ASTER_BACKTEST_RANKED_CSV="$RANKED_OUT"
   if ! "$PY_BIN" "$APP_DIR/deploy/gce/email_daily_report.py" --mode backtest; then
     echo "[BACKTEST] WARNING: backtest email report failed; backtest outputs are still complete."
   fi

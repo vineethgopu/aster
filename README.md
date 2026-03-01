@@ -239,8 +239,19 @@ Main components:
     - then switch to trailing callback distance
 - `build_ranked_metrics`: PnL/trade/risk metrics table (ranked by total_pnl)
 - Outputs:
-  - `ranked_metrics.csv` (metrics + config_id + param values)
-  - `config_mapping.csv` (config_id -> symbol + params)
+  - `backtest_results_<SYMBOL>_<YYYYMMDD>.csv`
+    - strategy metrics + config params + entry diagnostics columns:
+      - `valid_bars`
+      - `momentum_long_count`, `momentum_short_count`
+      - `volume_pass_count`
+      - `blockers_pass_count`
+      - `blocked_spread_count`, `blocked_funding_count`, `blocked_opening_loss_count`
+      - `entry_long_count`, `entry_short_count`, `entry_total_count`
+      - `has_any_entry`, `entry_rate`
+  - `backtest_config_<SYMBOL>_<YYYYMMDD>.csv` (config_id -> symbol + params)
+  - combined dated outputs:
+    - `backtest_results_<YYYYMMDD>.csv`
+    - `backtest_config_<YYYYMMDD>.csv`
 
 ## Typical Commands
 
@@ -282,8 +293,8 @@ python backtest/build_backtest_inputs.py \
 python backtest/backtest.py \
   --config_file ./backtest/config_grid.json \
   --inputs_csv ./backtest/backtest_inputs.csv \
-  --out_config_map_csv ./backtest/results/config_mapping.csv \
-  --out_ranked_csv ./backtest/results/ranked_metrics.csv \
+  --out_config_map_csv ./backtest/results/backtest_config_20260301.csv \
+  --out_ranked_csv ./backtest/results/backtest_results_20260301.csv \
   --chunk_size 1000
 ```
 
@@ -483,6 +494,75 @@ CREATE TABLE IF NOT EXISTS `<PROJECT_ID>.aster.orders` (
 )
 PARTITION BY date
 CLUSTER BY symbol, exit_reason, hour, minute, second;
+
+-- Backtest config snapshots (one run date, many symbol/config rows).
+CREATE TABLE IF NOT EXISTS `<PROJECT_ID>.aster.backtest_config` (
+  date DATE,
+  config_id STRING,
+  symbol STRING,
+  k FLOAT64,
+  T INT64,
+  n FLOAT64,
+  V INT64,
+  tp_bps FLOAT64,
+  sl_bps FLOAT64,
+  activation_bps FLOAT64,
+  activation_buffer_bps FLOAT64,
+  callback_bps FLOAT64,
+  min_tp_gap_bps FLOAT64,
+  spread_max FLOAT64,
+  funding_max FLOAT64
+)
+PARTITION BY date
+CLUSTER BY symbol, config_id;
+
+-- Backtest result snapshots (same delete+insert date key).
+CREATE TABLE IF NOT EXISTS `<PROJECT_ID>.aster.backtest_results` (
+  date DATE,
+  config_id STRING,
+  symbol STRING,
+  total_pnl FLOAT64,
+  total_return FLOAT64,
+  n_trades FLOAT64,
+  win_rate FLOAT64,
+  sharpe FLOAT64,
+  sortino FLOAT64,
+  max_drawdown FLOAT64,
+  avg_trade_pnl FLOAT64,
+  avg_win FLOAT64,
+  avg_loss FLOAT64,
+  avg_hold_bars FLOAT64,
+  k FLOAT64,
+  T INT64,
+  n FLOAT64,
+  V INT64,
+  tp_bps FLOAT64,
+  sl_bps FLOAT64,
+  activation_bps FLOAT64,
+  activation_buffer_bps FLOAT64,
+  callback_bps FLOAT64,
+  min_tp_gap_bps FLOAT64,
+  spread_max FLOAT64,
+  funding_max FLOAT64,
+  valid_bars INT64,
+  momentum_long_count INT64,
+  momentum_short_count INT64,
+  volume_pass_count INT64,
+  blockers_pass_count INT64,
+  blocked_spread_count INT64,
+  blocked_funding_count INT64,
+  blocked_opening_loss_count INT64,
+  entry_long_count INT64,
+  entry_short_count INT64,
+  entry_total_count INT64,
+  has_any_entry BOOL,
+  entry_rate FLOAT64
+)
+PARTITION BY date
+CLUSTER BY symbol, config_id;
+
+-- Note: BigQuery supports PARTITION BY one column.
+-- For "date + symbol + config" performance, use PARTITION BY date and CLUSTER BY symbol, config_id.
 ```
 
 ### 3) Prepare VM and app runtime
@@ -611,9 +691,17 @@ This schedules a weekly backtest run at `Sun 00:20 UTC`:
 - For each symbol:
   - builds symbol-specific inputs from BigQuery
   - runs config-driven VectorBT sweep with chunking
-- Combines per-symbol outputs and writes:
-  - `/opt/aster/backtest/results/config_mapping.csv`
-  - `/opt/aster/backtest/results/ranked_metrics.csv`
+- Writes per-symbol dated files:
+  - `/opt/aster/backtest/results/backtest_inputs_<SYMBOL>_<YYYYMMDD>.csv`
+  - `/opt/aster/backtest/results/backtest_config_<SYMBOL>_<YYYYMMDD>.csv`
+  - `/opt/aster/backtest/results/backtest_results_<SYMBOL>_<YYYYMMDD>.csv`
+- Combines per-symbol outputs and writes dated combined files:
+  - `/opt/aster/backtest/results/backtest_inputs_<YYYYMMDD>.csv`
+  - `/opt/aster/backtest/results/backtest_config_<YYYYMMDD>.csv`
+  - `/opt/aster/backtest/results/backtest_results_<YYYYMMDD>.csv`
+- Uploads combined backtest outputs to BigQuery (delete -> insert for the run date):
+  - table: `aster.backtest_config`
+  - table: `aster.backtest_results`
 
 Defaults in `run_backtest.sh`:
 - if `ASTER_BACKTEST_START_DATE`/`ASTER_BACKTEST_END_DATE` are empty:
@@ -621,6 +709,8 @@ Defaults in `run_backtest.sh`:
   - `start_date = UTC 28 days ago` (Sunday, 4 weeks before `end_date`)
 - `ASTER_BACKTEST_CHUNK_SIZE=1000` limits configs processed per symbol chunk
 - symbols are sourced from `ASTER_BACKTEST_QUERY_SYMBOLS` or config symbol keys
+- `ASTER_BQ_ENABLE_BACKTEST_UPLOAD=true` enables delete+insert upload of run-date backtest tables
+- `ASTER_BACKTEST_RETENTION_DAYS=28` trims dated backtest artifacts older than 28 days from `/opt/aster/backtest/results`
 
 ```bash
 sudo cp /opt/aster/deploy/gce/backtest/aster-backtest.service /etc/systemd/system/aster-backtest.service
@@ -651,7 +741,7 @@ Email report modes:
   - runtime issue metadata from logs (errors/warnings/timeouts/connection closes/tracebacks)
 - Backtest completion report (triggered by `run_backtest.sh` on successful completion):
   - `aster-backtest` service status
-  - top-10 configs per symbol from `ranked_metrics.csv`
+  - top-10 configs per symbol from the latest `backtest_results_*.csv` (or `ASTER_BACKTEST_RANKED_CSV` if set)
 
 Configure in `/opt/aster/deploy/gce/aster.env`:
 ```bash

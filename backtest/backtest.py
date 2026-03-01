@@ -197,7 +197,40 @@ def build_signals(
 
     cols = params.index
     to_df = lambda arr: pd.DataFrame(arr, index=idx, columns=cols)
-    return to_df(long_entries), to_df(long_exits), to_df(short_entries), to_df(short_exits)
+
+    valid_bars = np.full(len(cols), len(idx), dtype=np.int64)
+    momentum_long_count = long_ind1.sum(axis=0).astype(np.int64)
+    momentum_short_count = short_ind1.sum(axis=0).astype(np.int64)
+    volume_pass_count = ind2.sum(axis=0).astype(np.int64)
+    blockers_pass_count = blockers_ok.sum(axis=0).astype(np.int64)
+    blocked_spread_count = (spread > spread_max).sum(axis=0).astype(np.int64)
+    blocked_funding_count = (np.abs(funding) > funding_max).sum(axis=0).astype(np.int64)
+    blocked_opening_loss_count = (opening_loss > opening_loss_max).sum(axis=0).astype(np.int64)
+    entry_long_count = long_entries.sum(axis=0).astype(np.int64)
+    entry_short_count = short_entries.sum(axis=0).astype(np.int64)
+    entry_total_count = (entry_long_count + entry_short_count).astype(np.int64)
+    has_any_entry = entry_total_count > 0
+    entry_rate = np.where(valid_bars > 0, entry_total_count / valid_bars, 0.0)
+
+    diagnostics = pd.DataFrame(
+        {
+            "valid_bars": valid_bars,
+            "momentum_long_count": momentum_long_count,
+            "momentum_short_count": momentum_short_count,
+            "volume_pass_count": volume_pass_count,
+            "blockers_pass_count": blockers_pass_count,
+            "blocked_spread_count": blocked_spread_count,
+            "blocked_funding_count": blocked_funding_count,
+            "blocked_opening_loss_count": blocked_opening_loss_count,
+            "entry_long_count": entry_long_count,
+            "entry_short_count": entry_short_count,
+            "entry_total_count": entry_total_count,
+            "has_any_entry": has_any_entry,
+            "entry_rate": entry_rate,
+        },
+        index=cols,
+    )
+    return to_df(long_entries), to_df(long_exits), to_df(short_entries), to_df(short_exits), diagnostics
 
 
 def run_grid_backtest(
@@ -410,7 +443,7 @@ def _run_for_symbol(
         print(
             f"[CHUNK] symbol={symbol} chunk={i} start={start} end={end} size={len(params)} total_cfg={n_cfg}"
         )
-        le, lx, se, sx = build_signals(
+        le, lx, se, sx, diagnostics = build_signals(
             close=close,
             ret_bps=ret_bps,
             vol_rolling_by_t=vol_by_t,
@@ -438,12 +471,12 @@ def _run_for_symbol(
             fee_bps=fee_bps,
             slippage_bps=slippage_bps,
         )
-        ranked = build_ranked_metrics(pf).join(params, how="left")
+        ranked = build_ranked_metrics(pf).join(params, how="left").join(diagnostics, how="left")
         ranked.insert(0, "symbol", symbol)
         ranked_chunks.append(ranked)
 
         # Release heavy arrays between chunks to lower peak memory.
-        del le, lx, se, sx, pf, ranked, params
+        del le, lx, se, sx, diagnostics, pf, ranked, params
         gc.collect()
 
     all_ranked = pd.concat(ranked_chunks, axis=0)
@@ -492,8 +525,9 @@ def main() -> None:
     inputs_csv = args.inputs_csv.strip() or str(cfg.get("inputs_csv", "./backtest/backtest_inputs.csv"))
     inputs_path = Path(inputs_csv)
     output_dir = Path(str(cfg.get("output_dir", "./backtest/results")))
-    out_ranked_csv = args.out_ranked_csv.strip() or str(output_dir / "ranked_metrics.csv")
-    out_config_map_csv = args.out_config_map_csv.strip() or str(output_dir / "config_mapping.csv")
+    run_date = str(cfg.get("run_date", "")).strip() or pd.Timestamp.utcnow().strftime("%Y%m%d")
+    out_ranked_csv = args.out_ranked_csv.strip() or str(output_dir / f"backtest_results_{run_date}.csv")
+    out_config_map_csv = args.out_config_map_csv.strip() or str(output_dir / f"backtest_config_{run_date}.csv")
     fee_bps = float(cfg.get("fee_bps", 4.0))
     slippage_bps = float(cfg.get("slippage_bps", 0.0))
 
