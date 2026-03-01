@@ -857,12 +857,12 @@ sudo systemctl restart aster
 
 Optional per-symbol runtime config:
 - Set `ASTER_CONFIG_CURRENT_FILE=/opt/aster/core/config_current.json` in `aster.env`.
-- `main.py` will load symbol-specific params at startup (with fallback to CLI/env scalar defaults).
-- Example template:
-  - `core/config_current.example.json`
-- Expected JSON shapes:
-  - `{ "default": {...}, "symbols": { "BTCUSDT": {...}, "ETHUSDT": {...} } }`
-  - or direct map `{ "BTCUSDT": {...}, "ETHUSDT": {...} }`
+- `main.py` will load symbol-specific params at startup from `core/config_current.json`.
+- Supported keys (same family as `backtest/config_grid.json` params):
+  - `k`, `T`, `n`, `V`, `tp_bps`, `sl_bps`, `activation_bps`, `activation_buffer_bps`, `callback_bps`, `min_tp_gap_bps`, `spread_max`, `funding_max`
+- Required JSON shape (strict, no defaults/overrides):
+  - `{ "BTCUSDT": {...all supported keys...}, "ETHUSDT": {...}, ... }`
+- Runtime symbols in `ASTER_SYMBOLS` must each have a config block in `config_current.json`.
 
 #### 6.4) Other important update flows
 

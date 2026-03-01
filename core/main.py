@@ -140,63 +140,41 @@ def _load_tick_size_by_symbol(rest_client: Any, symbols: list[str]) -> Dict[str,
 
 
 _SYMBOL_PARAM_KEYS = {
-    "target_leverage",
-    "risk_pct",
-    "order_notional",
     "k",
     "T",
     "n",
     "V",
-    "max_spread",
-    "max_spread_ticks",
-    "max_funding_abs_bps",
-    "taker_fee_bps",
-    "take_profit_bps",
-    "stop_loss_bps",
-    "trailing_activation_bps",
-    "trailing_activation_buffer_bps",
-    "trailing_callback_bps",
-    "min_take_profit_gap_bps",
-    "margin_safety_multiple",
-    "daily_drawdown_blocker_pct",
-    "reentry_cooldown_min",
+    "tp_bps",
+    "sl_bps",
+    "activation_bps",
+    "activation_buffer_bps",
+    "callback_bps",
+    "min_tp_gap_bps",
+    "spread_max",
+    "funding_max",
 }
-_SYMBOL_PARAM_INT_KEYS = {"target_leverage", "T", "V", "reentry_cooldown_min"}
-_SYMBOL_PARAM_FLOAT_KEYS = _SYMBOL_PARAM_KEYS - _SYMBOL_PARAM_INT_KEYS - {"order_notional"}
+_SYMBOL_PARAM_INT_KEYS = {"T", "V"}
+_SYMBOL_PARAM_FLOAT_KEYS = _SYMBOL_PARAM_KEYS - _SYMBOL_PARAM_INT_KEYS
 
 
 def _default_symbol_params_from_args(args: argparse.Namespace) -> Dict[str, Any]:
     return {
-        "target_leverage": int(args.target_leverage),
-        "risk_pct": float(args.risk_pct),
-        "order_notional": (None if args.order_notional is None else float(args.order_notional)),
         "k": float(args.k),
         "T": int(args.T),
         "n": float(args.n),
         "V": int(args.V),
-        "max_spread": float(args.max_spread),
-        "max_spread_ticks": float(args.max_spread_ticks),
-        "max_funding_abs_bps": float(args.max_funding_abs_bps),
-        "taker_fee_bps": float(args.taker_fee_bps),
-        "take_profit_bps": float(args.take_profit_bps),
-        "stop_loss_bps": float(args.stop_loss_bps),
-        "trailing_activation_bps": float(args.trailing_activation_bps),
-        "trailing_activation_buffer_bps": float(args.trailing_activation_buffer_bps),
-        "trailing_callback_bps": float(args.trailing_callback_bps),
-        "min_take_profit_gap_bps": float(args.min_take_profit_gap_bps),
-        "margin_safety_multiple": float(args.margin_safety_multiple),
-        "daily_drawdown_blocker_pct": float(args.daily_drawdown_blocker_pct),
-        "reentry_cooldown_min": int(args.reentry_cooldown_min),
+        "tp_bps": float(args.take_profit_bps),
+        "sl_bps": float(args.stop_loss_bps),
+        "activation_bps": float(args.trailing_activation_bps),
+        "activation_buffer_bps": float(args.trailing_activation_buffer_bps),
+        "callback_bps": float(args.trailing_callback_bps),
+        "min_tp_gap_bps": float(args.min_take_profit_gap_bps),
+        "spread_max": float(args.max_spread),
+        "funding_max": float(args.max_funding_abs_bps),
     }
 
 
 def _cast_symbol_param_value(key: str, value: Any) -> Any:
-    if key == "order_notional":
-        if value is None:
-            return None
-        if isinstance(value, str) and not value.strip():
-            return None
-        return float(value)
     if key in _SYMBOL_PARAM_INT_KEYS:
         return int(value)
     if key in _SYMBOL_PARAM_FLOAT_KEYS:
@@ -205,12 +183,6 @@ def _cast_symbol_param_value(key: str, value: Any) -> Any:
 
 
 def _validate_symbol_params(symbol: str, p: Dict[str, Any]) -> None:
-    if p["target_leverage"] <= 0:
-        raise ValueError(f"{symbol}: target_leverage must be > 0")
-    if p["risk_pct"] <= 0:
-        raise ValueError(f"{symbol}: risk_pct must be > 0")
-    if p["order_notional"] is not None and p["order_notional"] <= 0:
-        raise ValueError(f"{symbol}: order_notional must be > 0 when provided")
     if p["k"] <= 0:
         raise ValueError(f"{symbol}: k must be > 0")
     if p["T"] <= 0:
@@ -219,28 +191,22 @@ def _validate_symbol_params(symbol: str, p: Dict[str, Any]) -> None:
         raise ValueError(f"{symbol}: n must be > 0")
     if p["V"] <= 0:
         raise ValueError(f"{symbol}: V must be > 0")
-    if p["max_spread_ticks"] <= 0:
-        raise ValueError(f"{symbol}: max_spread_ticks must be > 0")
-    if p["max_funding_abs_bps"] <= 0:
-        raise ValueError(f"{symbol}: max_funding_abs_bps must be > 0")
-    if p["take_profit_bps"] <= 0:
-        raise ValueError(f"{symbol}: take_profit_bps must be > 0")
-    if p["stop_loss_bps"] <= 0:
-        raise ValueError(f"{symbol}: stop_loss_bps must be > 0")
-    if p["trailing_activation_bps"] <= 0:
-        raise ValueError(f"{symbol}: trailing_activation_bps must be > 0")
-    if p["trailing_activation_buffer_bps"] < 0:
-        raise ValueError(f"{symbol}: trailing_activation_buffer_bps must be >= 0")
-    if p["trailing_callback_bps"] <= 0:
-        raise ValueError(f"{symbol}: trailing_callback_bps must be > 0")
-    if p["min_take_profit_gap_bps"] < 0:
-        raise ValueError(f"{symbol}: min_take_profit_gap_bps must be >= 0")
-    if p["margin_safety_multiple"] <= 0:
-        raise ValueError(f"{symbol}: margin_safety_multiple must be > 0")
-    if p["daily_drawdown_blocker_pct"] <= 0 or p["daily_drawdown_blocker_pct"] >= 100:
-        raise ValueError(f"{symbol}: daily_drawdown_blocker_pct must be in (0, 100)")
-    if p["reentry_cooldown_min"] < 0:
-        raise ValueError(f"{symbol}: reentry_cooldown_min must be >= 0")
+    if p["tp_bps"] <= 0:
+        raise ValueError(f"{symbol}: tp_bps must be > 0")
+    if p["sl_bps"] <= 0:
+        raise ValueError(f"{symbol}: sl_bps must be > 0")
+    if p["activation_bps"] <= 0:
+        raise ValueError(f"{symbol}: activation_bps must be > 0")
+    if p["activation_buffer_bps"] < 0:
+        raise ValueError(f"{symbol}: activation_buffer_bps must be >= 0")
+    if p["callback_bps"] <= 0:
+        raise ValueError(f"{symbol}: callback_bps must be > 0")
+    if p["min_tp_gap_bps"] < 0:
+        raise ValueError(f"{symbol}: min_tp_gap_bps must be >= 0")
+    if p["spread_max"] <= 0:
+        raise ValueError(f"{symbol}: spread_max must be > 0")
+    if p["funding_max"] <= 0:
+        raise ValueError(f"{symbol}: funding_max must be > 0")
 
 
 def _load_symbol_runtime_config(
@@ -262,42 +228,31 @@ def _load_symbol_runtime_config(
     if not isinstance(raw, dict):
         raise ValueError(f"config_current_file must be a JSON object: {p}")
 
-    # Accepted forms:
-    # 1) {"default": {...}, "symbols": {"BTCUSDT": {...}, ...}}
-    # 2) {"BTCUSDT": {...}, "ETHUSDT": {...}}
-    if "symbols" in raw or "default" in raw:
-        default_patch = raw.get("default", {})
-        symbol_patch = raw.get("symbols", {})
-    else:
-        default_patch = {}
-        symbol_patch = raw
-
-    if default_patch and not isinstance(default_patch, dict):
-        raise ValueError(f"{p}: default must be an object")
-    if symbol_patch and not isinstance(symbol_patch, dict):
-        raise ValueError(f"{p}: symbols must be an object")
-
-    if isinstance(default_patch, dict):
-        for k, v in default_patch.items():
-            if k not in _SYMBOL_PARAM_KEYS:
-                print(f"[WARN] {p}: ignoring unknown default key: {k}")
-                continue
-            cast_v = _cast_symbol_param_value(k, v)
-            for sym in symbols:
-                out[sym][k] = cast_v
-
-    for raw_sym, patch in (symbol_patch or {}).items():
+    # Strict form only:
+    # {
+    #   "BTCUSDT": {...all required keys...},
+    #   "ETHUSDT": {...all required keys...}
+    # }
+    for raw_sym, patch in raw.items():
         sym = str(raw_sym).strip().upper()
         if sym not in out:
             print(f"[WARN] {p}: symbol {sym} is not in runtime --symbols; ignoring.")
             continue
         if not isinstance(patch, dict):
-            raise ValueError(f"{p}: symbols.{sym} must be an object")
+            raise ValueError(f"{p}: {sym} must be an object")
+        missing = [k for k in _SYMBOL_PARAM_KEYS if k not in patch]
+        if missing:
+            raise ValueError(f"{p}: {sym} missing required keys: {missing}")
+        sym_cfg: Dict[str, Any] = {}
         for k, v in patch.items():
             if k not in _SYMBOL_PARAM_KEYS:
-                print(f"[WARN] {p}: ignoring unknown key for {sym}: {k}")
-                continue
-            out[sym][k] = _cast_symbol_param_value(k, v)
+                raise ValueError(f"{p}: unsupported key for {sym}: {k}")
+            sym_cfg[k] = _cast_symbol_param_value(k, v)
+        out[sym] = sym_cfg
+
+    for sym in symbols:
+        if sym not in raw:
+            raise ValueError(f"{p}: missing symbol section for runtime symbol {sym}")
 
     for sym in symbols:
         _validate_symbol_params(sym, out[sym])
@@ -655,9 +610,9 @@ if __name__ == "__main__":
                 t_window=sp["T"],
                 n=sp["n"],
                 v_window=sp["V"],
-                max_spread=sp["max_spread"],
-                max_spread_ticks=sp["max_spread_ticks"],
-                max_funding_abs_bps=sp["max_funding_abs_bps"],
+                max_spread=sp["spread_max"],
+                max_spread_ticks=args.max_spread_ticks,
+                max_funding_abs_bps=sp["funding_max"],
                 tick_size_by_symbol=tick_size_by_symbol,
             ),
             symbols=[sym],
@@ -668,17 +623,12 @@ if __name__ == "__main__":
         api_key = _read_secret(os.getenv("ORDER_API_KEY"))
         api_secret = _read_secret(os.getenv("ORDER_SECRET_KEY"))
         order_placer = OrderPlacer(api_key=api_key, api_secret=api_secret)
-        leverage_groups: Dict[int, list[str]] = {}
-        for sym in symbols:
-            lev = int(symbol_params[sym]["target_leverage"])
-            leverage_groups.setdefault(lev, []).append(sym)
-        for lev, syms in sorted(leverage_groups.items(), key=lambda kv: kv[0]):
-            risk_setup = order_placer.ensure_risk_setup(
-                symbols=syms,
-                leverage=lev,
-                margin_type="ISOLATED",
-            )
-            print(f"[RISK_SETUP] leverage={lev} symbols={syms} resp={risk_setup}")
+        risk_setup = order_placer.ensure_risk_setup(
+            symbols=symbols,
+            leverage=args.target_leverage,
+            margin_type="ISOLATED",
+        )
+        print(f"[RISK_SETUP] {risk_setup}")
         print("Live trading: ENABLED")
     else:
         print("Live trading: DISABLED")
@@ -699,11 +649,9 @@ if __name__ == "__main__":
     daily_last_balance: Optional[float] = None
     daily_drawdown_frac = 0.0
     daily_drawdown_blocked = False
-    daily_drawdown_blocker_pct = min(symbol_params[s]["daily_drawdown_blocker_pct"] for s in symbols)
+    daily_drawdown_blocker_pct = args.daily_drawdown_blocker_pct
     daily_balance_missing_warned = False
-    effective_order_notional_by_symbol: Dict[str, Optional[float]] = {
-        s: symbol_params[s]["order_notional"] for s in symbols
-    }
+    effective_order_notional = args.order_notional
     start = time.time()
 
     try:
@@ -720,9 +668,7 @@ if __name__ == "__main__":
                     daily_drawdown_frac = 0.0
                     daily_drawdown_blocked = False
                     daily_balance_missing_warned = False
-                    effective_order_notional_by_symbol = {
-                        s: symbol_params[s]["order_notional"] for s in symbols
-                    }
+                    effective_order_notional = args.order_notional
                     print(f"[RISK_DAY_RESET] utc_day={utc_day}")
 
                 balance_now = order_placer.get_total_margin_balance()
@@ -731,17 +677,13 @@ if __name__ == "__main__":
                     daily_balance_missing_warned = False
                     if daily_start_balance is None:
                         daily_start_balance = balance_now
-                        for sym in symbols:
-                            if effective_order_notional_by_symbol.get(sym) is None:
-                                sp = symbol_params[sym]
-                                effective_order_notional_by_symbol[sym] = (
-                                    daily_start_balance * (sp["risk_pct"] / 100.0) * sp["target_leverage"]
-                                )
-                                print(
-                                    f"[NOTIONAL_DEFAULT] {sym} start_balance={daily_start_balance:.6f} "
-                                    f"risk_pct={sp['risk_pct']:.4f}% leverage={sp['target_leverage']} "
-                                    f"order_notional={effective_order_notional_by_symbol[sym]:.6f}"
-                                )
+                        if args.order_notional is None:
+                            effective_order_notional = daily_start_balance * (args.risk_pct / 100.0) * args.target_leverage
+                            print(
+                                f"[NOTIONAL_DEFAULT] start_balance={daily_start_balance:.6f} "
+                                f"risk_pct={args.risk_pct:.4f}% leverage={args.target_leverage} "
+                                f"order_notional={effective_order_notional:.6f}"
+                            )
                     if daily_peak_balance is None or balance_now > daily_peak_balance:
                         daily_peak_balance = balance_now
                     if daily_peak_balance and daily_peak_balance > 0:
@@ -845,7 +787,7 @@ if __name__ == "__main__":
                                 order_placer.cancel_sibling_exit_orders(pos)
                                 del positions[sym]
                                 trade_trackers.pop(sym, None)
-                                cooldown_until_ms[sym] = ts_ms + int(sym_cfg["reentry_cooldown_min"]) * 60_000
+                                cooldown_until_ms[sym] = ts_ms + args.reentry_cooldown_min * 60_000
                         continue
 
                     if utc_minute >= force_exit_min:
@@ -877,7 +819,7 @@ if __name__ == "__main__":
                                 order_placer.cancel_sibling_exit_orders(pos)
                                 del positions[sym]
                                 trade_trackers.pop(sym, None)
-                                cooldown_until_ms[sym] = ts_ms + int(sym_cfg["reentry_cooldown_min"]) * 60_000
+                                cooldown_until_ms[sym] = ts_ms + args.reentry_cooldown_min * 60_000
                         continue
 
                     live_qty = order_placer.get_position_abs_qty(sym)
@@ -901,7 +843,7 @@ if __name__ == "__main__":
                         order_placer.cancel_sibling_exit_orders(pos)
                         del positions[sym]
                         trade_trackers.pop(sym, None)
-                        cooldown_until_ms[sym] = ts_ms + int(sym_cfg["reentry_cooldown_min"]) * 60_000
+                        cooldown_until_ms[sym] = ts_ms + args.reentry_cooldown_min * 60_000
                         continue
 
                     exit_res = order_placer.maybe_exit(
@@ -909,7 +851,7 @@ if __name__ == "__main__":
                         price_source=client,
                         c1_bps=0.0,
                         c2_bps=0.0,
-                        margin_safety_multiple_min=sym_cfg["margin_safety_multiple"],
+                        margin_safety_multiple_min=args.margin_safety_multiple,
                         account_poll=True,
                     )
                     if exit_res is not None:
@@ -932,7 +874,7 @@ if __name__ == "__main__":
                             order_placer.cancel_sibling_exit_orders(pos)
                             del positions[sym]
                             trade_trackers.pop(sym, None)
-                            cooldown_until_ms[sym] = ts_ms + int(sym_cfg["reentry_cooldown_min"]) * 60_000
+                            cooldown_until_ms[sym] = ts_ms + args.reentry_cooldown_min * 60_000
                     continue
 
                 if daily_drawdown_blocked:
@@ -959,7 +901,7 @@ if __name__ == "__main__":
                             )
                             print(f"[EXIT] {sym} {exit_res}")
                             if exit_res.ok:
-                                cooldown_until_ms[sym] = ts_ms + int(sym_cfg["reentry_cooldown_min"]) * 60_000
+                                cooldown_until_ms[sym] = ts_ms + args.reentry_cooldown_min * 60_000
                         continue
                     print(
                         (
@@ -991,7 +933,7 @@ if __name__ == "__main__":
                             )
                             print(f"[EXIT] {sym} {exit_res}")
                             if exit_res.ok:
-                                cooldown_until_ms[sym] = ts_ms + int(sym_cfg["reentry_cooldown_min"]) * 60_000
+                                cooldown_until_ms[sym] = ts_ms + args.reentry_cooldown_min * 60_000
                         continue
 
                 if not decision or not decision.get("enter"):
@@ -1011,7 +953,6 @@ if __name__ == "__main__":
                     print(f"[ENTRY_BLOCKED] {sym} exchange position still open qty={live_qty}")
                     continue
 
-                effective_order_notional = effective_order_notional_by_symbol.get(sym)
                 if effective_order_notional is None or effective_order_notional <= 0:
                     print(f"[ENTRY_BLOCKED] {sym} order_notional unavailable (awaiting balance/default calc).")
                     continue
@@ -1021,12 +962,12 @@ if __name__ == "__main__":
                 funding = snap.get("funding") or {}
                 opening_loss_bps = float(max(0.0, blockers.get("opening_loss_bps") or 0.0))
                 funding_bps = abs(float(funding.get("funding_rate") or 0.0) * 1e4)
-                be_floor_bps = 2.0 * sym_cfg["taker_fee_bps"] + opening_loss_bps + (funding_bps / 8.0)
-                activation_auto_bps = be_floor_bps + max(0.0, sym_cfg["trailing_activation_buffer_bps"])
-                activation_bps = max(sym_cfg["trailing_activation_bps"], activation_auto_bps)
-                tp_bps = max(sym_cfg["take_profit_bps"], activation_bps + max(0.0, sym_cfg["min_take_profit_gap_bps"]))
-                sl_bps = sym_cfg["stop_loss_bps"]
-                trailing_callback_rate = sym_cfg["trailing_callback_bps"] / 1e4
+                be_floor_bps = 2.0 * args.taker_fee_bps + opening_loss_bps + (funding_bps / 8.0)
+                activation_auto_bps = be_floor_bps + max(0.0, sym_cfg["activation_buffer_bps"])
+                activation_bps = max(sym_cfg["activation_bps"], activation_auto_bps)
+                tp_bps = max(sym_cfg["tp_bps"], activation_bps + max(0.0, sym_cfg["min_tp_gap_bps"]))
+                sl_bps = sym_cfg["sl_bps"]
+                trailing_callback_rate = sym_cfg["callback_bps"] / 1e4
 
                 entry_limit_price = order_placer.get_entry_limit_price(sym, side, client)
                 if entry_limit_price is None:
