@@ -89,6 +89,23 @@ def _load_dataframe_csv(client: bigquery.Client, table_id: str, df: pd.DataFrame
         temp_path.unlink(missing_ok=True)
 
 
+def _align_to_table_schema(df: pd.DataFrame, table: bigquery.Table) -> pd.DataFrame:
+    # BigQuery CSV load maps by column position unless configured otherwise.
+    # Aligning to table schema order avoids positional parse mismatches.
+    schema_cols = [f.name for f in table.schema]
+    missing = [c for c in schema_cols if c not in df.columns]
+    if missing:
+        raise RuntimeError(
+            f"Prepared dataframe for {table.full_table_id} is missing required columns: {missing}"
+        )
+
+    extra = [c for c in df.columns if c not in schema_cols]
+    if extra:
+        print(f"[WARN] dropping extra columns for {table.table_id}: {extra}")
+
+    return df[schema_cols].copy()
+
+
 def _prepare_table_frame(results_dir: Path, table: str, run_date: str) -> Optional[pd.DataFrame]:
     prefix = TABLE_TO_PREFIX[table]
     files = _find_symbol_files(results_dir=results_dir, prefix=prefix, run_date=run_date)
@@ -103,8 +120,16 @@ def _prepare_table_frame(results_dir: Path, table: str, run_date: str) -> Option
     if df.empty:
         print(f"[SKIP] {table}: empty after concat")
         return None
+
+    # Backward compatibility if index column was persisted as unnamed.
+    if "config_id" not in df.columns and "Unnamed: 0" in df.columns:
+        df = df.rename(columns={"Unnamed: 0": "config_id"})
+
     # Backtest run date partition key.
-    df["date"] = datetime.strptime(run_date, "%Y%m%d").strftime("%Y-%m-%d")
+    date_str = datetime.strptime(run_date, "%Y%m%d").strftime("%Y-%m-%d")
+    if "date" in df.columns:
+        df = df.drop(columns=["date"])
+    df.insert(0, "date", date_str)
     print(f"[PREP] {table}: files={len(files)} rows={len(df)}")
     return df
 
@@ -138,9 +163,10 @@ def run(
     total_loaded = 0
     for table, df in prepared.items():
         table_id = f"{project_id}.{dataset}.{table}"
-        _get_table_or_raise(client, table_id=table_id)
+        table_obj = _get_table_or_raise(client, table_id=table_id)
+        df_aligned = _align_to_table_schema(df=df, table=table_obj)
         _delete_partition_date(client, table_id=table_id, target_date=target_date)
-        loaded = _load_dataframe_csv(client=client, table_id=table_id, df=df)
+        loaded = _load_dataframe_csv(client=client, table_id=table_id, df=df_aligned)
         total_loaded += loaded
         print(f"[DONE] table={table_id} loaded_rows={loaded}")
 
@@ -176,4 +202,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
