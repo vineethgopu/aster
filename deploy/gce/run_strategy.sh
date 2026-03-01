@@ -49,6 +49,7 @@ CMD=(python main.py \
   --n "${ASTER_N:-1.3}" \
   --V "${ASTER_V:-30}" \
   --max_spread "${ASTER_MAX_SPREAD:-0.2}" \
+  --max_spread_ticks "${ASTER_MAX_SPREAD_TICKS:-2.0}" \
   --max_funding_abs_bps "${ASTER_MAX_FUNDING_ABS_BPS:-1.5}" \
   --taker_fee_bps "${ASTER_TAKER_FEE_BPS:-4.0}" \
   --take_profit_bps "${ASTER_TAKE_PROFIT_BPS:-20.0}" \

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Deque, Dict, Optional, Tuple
 
 
@@ -45,14 +45,23 @@ class StrategyConfig:
     t_window: int
     n: float
     v_window: int
+    # Fallback raw-price spread cap if tick size is unavailable.
     max_spread: float = 0.2
+    # Primary spread gate: spread <= max_spread_ticks * tick_size.
+    max_spread_ticks: float = 2.0
     max_funding_abs_bps: float = 1.5
+    tick_size_by_symbol: Dict[str, float] = field(default_factory=dict)
 
 
 class Strategy:
     def __init__(self, cfg: StrategyConfig, symbols: list[str]) -> None:
         self.cfg = cfg
         self.symbols = symbols
+        self._tick_size_by_symbol = {
+            str(k).upper(): float(v)
+            for k, v in (cfg.tick_size_by_symbol or {}).items()
+            if v is not None and float(v) > 0
+        }
 
         self._rs_vars: Dict[str, Deque[float]] = {
             s: deque(maxlen=max(2, cfg.t_window)) for s in symbols
@@ -131,7 +140,7 @@ class Strategy:
                 indicator1 = True
 
         indicator2 = bool(avg_vol is not None and avg_vol > 0 and v > self.cfg.n * avg_vol)
-        blockers_ok, blockers = self._check_blockers(bbo=bbo, funding=funding, side=side)
+        blockers_ok, blockers = self._check_blockers(bbo=bbo, funding=funding, side=side, symbol=symbol)
         should_enter = bool(indicator1 and indicator2 and blockers_ok and side in ("BUY", "SELL"))
 
         return {
@@ -155,6 +164,7 @@ class Strategy:
         bbo: Optional[Dict[str, Any]],
         funding: Optional[Dict[str, Any]],
         side: Optional[str],
+        symbol: Optional[str] = None,
     ) -> Tuple[bool, Dict[str, Any]]:
         detail: Dict[str, Any] = {}
 
@@ -168,11 +178,28 @@ class Strategy:
             detail["spread_ok"] = False
             detail["spread"] = None
             detail["spread_bps"] = None
+            detail["spread_ticks"] = None
+            detail["tick_size"] = None
             spread_ok = False
         else:
             spread = ask - bid
             spread_bps = 1e4 * spread / mid
-            spread_ok = spread <= self.cfg.max_spread
+            sym = str(symbol or "").upper()
+            tick_size = self._tick_size_by_symbol.get(sym)
+            if tick_size is not None and tick_size > 0:
+                spread_ticks = spread / tick_size
+                spread_limit = self.cfg.max_spread_ticks * tick_size
+                spread_ok = spread <= spread_limit
+                detail["spread_ticks"] = spread_ticks
+                detail["tick_size"] = tick_size
+                detail["spread_limit_ticks"] = self.cfg.max_spread_ticks
+                detail["spread_limit"] = spread_limit
+            else:
+                spread_ok = spread <= self.cfg.max_spread
+                detail["spread_ticks"] = None
+                detail["tick_size"] = None
+                detail["spread_limit_ticks"] = None
+                detail["spread_limit"] = self.cfg.max_spread
             detail["spread"] = spread
             detail["spread_bps"] = spread_bps
             detail["spread_ok"] = spread_ok

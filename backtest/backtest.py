@@ -4,6 +4,7 @@ import argparse
 import gc
 import itertools
 import json
+import urllib.request
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -95,6 +96,48 @@ def load_config(path: Path) -> Dict:
     return cfg
 
 
+def fetch_tick_sizes_from_exchange_info(
+    symbols: List[str],
+    exchange_info_url: str = "https://fapi.asterdex.com/fapi/v1/exchangeInfo",
+    timeout_s: float = 15.0,
+) -> Dict[str, float]:
+    want = {str(s).strip().upper() for s in symbols if str(s).strip()}
+    if not want:
+        return {}
+    try:
+        with urllib.request.urlopen(exchange_info_url, timeout=timeout_s) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        data = payload.get("data") if isinstance(payload, dict) and isinstance(payload.get("data"), dict) else payload
+        syms = data.get("symbols") if isinstance(data, dict) else None
+        if not isinstance(syms, list):
+            print(f"[WARN] exchangeInfo symbols payload not found at {exchange_info_url}")
+            return {}
+
+        out: Dict[str, float] = {}
+        for s in syms:
+            if not isinstance(s, dict):
+                continue
+            sym = str(s.get("symbol", "")).upper()
+            if sym not in want:
+                continue
+            filters = s.get("filters")
+            if not isinstance(filters, list):
+                continue
+            for f in filters:
+                if not isinstance(f, dict):
+                    continue
+                if str(f.get("filterType", "")) != "PRICE_FILTER":
+                    continue
+                tick = _to_float(f.get("tickSize"), key="tickSize", symbol=sym)
+                if tick > 0:
+                    out[sym] = tick
+                break
+        return out
+    except Exception as e:
+        print(f"[WARN] failed to fetch tick sizes from exchangeInfo: {e}")
+        return {}
+
+
 def build_config_map(symbol_cfg: Dict[str, Dict]) -> pd.DataFrame:
     if not isinstance(symbol_cfg, dict) or not symbol_cfg:
         raise ValueError("config.symbols must be a non-empty object: {SYMBOL: {params: {...}}}")
@@ -157,10 +200,13 @@ def build_signals(
     vol_rolling_by_t: Dict[int, pd.Series],
     vol1m: pd.Series,
     avg_vol_by_v: Dict[int, pd.Series],
+    bid_px: pd.Series,
+    ask_px: pd.Series,
     spread_bps: pd.Series,
     funding_bps: pd.Series,
     opening_loss_bps: pd.Series,
     params: pd.DataFrame,
+    tick_size: Optional[float],
 ):
     idx = close.index
 
@@ -169,18 +215,27 @@ def build_signals(
     cur_vol = vol1m.reindex(idx).values[:, None]
     avg_vol_mat = _select_feature_matrix(avg_vol_by_v, params["V"], idx)
 
-    spread = spread_bps.reindex(idx).values[:, None]
+    bid = bid_px.reindex(idx).values[:, None]
+    ask = ask_px.reindex(idx).values[:, None]
+    spread_raw = ask - bid
+    spread_bps_mat = spread_bps.reindex(idx).values[:, None]
     funding = funding_bps.reindex(idx).values[:, None]
     opening_loss = opening_loss_bps.reindex(idx).values[:, None]
 
     k = params["k"].values[None, :]
     n = params["n"].values[None, :]
-    spread_max = params["spread_max"].values[None, :]
     funding_max = params["funding_max"].values[None, :]
 
-    opening_loss_max = np.minimum(10.0, 5.0 + 2.0 * spread)
+    if tick_size is not None and tick_size > 0:
+        spread_limit_raw = 2.0 * tick_size
+        spread_ok = spread_raw <= spread_limit_raw
+    else:
+        spread_max = params["spread_max"].values[None, :]
+        spread_ok = spread_bps_mat <= spread_max
+
+    opening_loss_max = np.minimum(10.0, 5.0 + 2.0 * spread_bps_mat)
     blockers_ok = (
-        (spread <= spread_max)
+        spread_ok
         & (np.abs(funding) <= funding_max)
         & (opening_loss <= opening_loss_max)
     )
@@ -203,7 +258,7 @@ def build_signals(
     momentum_short_count = short_ind1.sum(axis=0).astype(np.int64)
     volume_pass_count = ind2.sum(axis=0).astype(np.int64)
     blockers_pass_count = blockers_ok.sum(axis=0).astype(np.int64)
-    blocked_spread_count = (spread > spread_max).sum(axis=0).astype(np.int64)
+    blocked_spread_count = (~spread_ok).sum(axis=0).astype(np.int64)
     blocked_funding_count = (np.abs(funding) > funding_max).sum(axis=0).astype(np.int64)
     blocked_opening_loss_count = (opening_loss > opening_loss_max).sum(axis=0).astype(np.int64)
     entry_long_count = long_entries.sum(axis=0).astype(np.int64)
@@ -376,6 +431,7 @@ def _build_feature_maps(df: pd.DataFrame, t_values: List[int], v_values: List[in
 def _run_for_symbol(
     inputs_df: pd.DataFrame,
     symbol_cfg: pd.DataFrame,
+    tick_size_by_symbol: Dict[str, float],
     fee_bps: float,
     slippage_bps: float,
     chunk_size: int,
@@ -391,11 +447,18 @@ def _run_for_symbol(
     low_px = pd.to_numeric(inputs_df.get("low", close), errors="coerce")
     ret_bps = pd.to_numeric(inputs_df["ret_bps"], errors="coerce")
     vol1m = pd.to_numeric(inputs_df["vol1m"], errors="coerce")
-    spread_bps = pd.to_numeric(inputs_df["spread_bps"], errors="coerce")
-    funding_bps = pd.to_numeric(inputs_df["funding_bps"], errors="coerce")
-    opening_loss_bps = pd.to_numeric(inputs_df["opening_loss_bps"], errors="coerce")
+    bid_px = pd.to_numeric(inputs_df.get("bid_px"), errors="coerce")
+    ask_px = pd.to_numeric(inputs_df.get("ask_px"), errors="coerce")
     tw_bid_px = pd.to_numeric(inputs_df.get("tw_bid_px", inputs_df.get("bid_px", close)), errors="coerce")
     tw_ask_px = pd.to_numeric(inputs_df.get("tw_ask_px", inputs_df.get("ask_px", close)), errors="coerce")
+    bid_px = bid_px.fillna(tw_bid_px)
+    ask_px = ask_px.fillna(tw_ask_px)
+    mid_px = pd.to_numeric(inputs_df.get("mid"), errors="coerce")
+    mid_px = mid_px.where(mid_px > 0, 0.5 * (bid_px + ask_px))
+    spread_bps = pd.to_numeric(inputs_df.get("spread_bps"), errors="coerce")
+    spread_bps = spread_bps.where(spread_bps.notna(), 1e4 * (ask_px - bid_px) / mid_px)
+    funding_bps = pd.to_numeric(inputs_df["funding_bps"], errors="coerce")
+    opening_loss_bps = pd.to_numeric(inputs_df["opening_loss_bps"], errors="coerce")
 
     open_px = open_px.fillna(close)
     high_px = high_px.fillna(close)
@@ -404,19 +467,36 @@ def _run_for_symbol(
     low_px = pd.concat([low_px, open_px, close], axis=1).min(axis=1)
     tw_bid_px = tw_bid_px.fillna(close)
     tw_ask_px = tw_ask_px.fillna(close)
-    bad_spread = tw_bid_px > tw_ask_px
-    if bad_spread.any():
+    bad_spread_tw = tw_bid_px > tw_ask_px
+    if bad_spread_tw.any():
         swap_bid = tw_bid_px.copy()
-        tw_bid_px = tw_bid_px.where(~bad_spread, tw_ask_px)
-        tw_ask_px = tw_ask_px.where(~bad_spread, swap_bid)
+        tw_bid_px = tw_bid_px.where(~bad_spread_tw, tw_ask_px)
+        tw_ask_px = tw_ask_px.where(~bad_spread_tw, swap_bid)
 
-    valid = close.notna() & ret_bps.notna() & vol1m.notna() & spread_bps.notna() & funding_bps.notna() & opening_loss_bps.notna()
+    bad_spread = bid_px > ask_px
+    if bad_spread.any():
+        swap_bid = bid_px.copy()
+        bid_px = bid_px.where(~bad_spread, ask_px)
+        ask_px = ask_px.where(~bad_spread, swap_bid)
+
+    valid = (
+        close.notna()
+        & ret_bps.notna()
+        & vol1m.notna()
+        & bid_px.notna()
+        & ask_px.notna()
+        & spread_bps.notna()
+        & funding_bps.notna()
+        & opening_loss_bps.notna()
+    )
     close = close[valid]
     open_px = open_px[valid]
     high_px = high_px[valid]
     low_px = low_px[valid]
     ret_bps = ret_bps[valid]
     vol1m = vol1m[valid]
+    bid_px = bid_px[valid]
+    ask_px = ask_px[valid]
     spread_bps = spread_bps[valid]
     funding_bps = funding_bps[valid]
     opening_loss_bps = opening_loss_bps[valid]
@@ -429,6 +509,9 @@ def _run_for_symbol(
 
     params_all = symbol_cfg.drop(columns=["symbol"]).copy().set_index("config_id")
     symbol = symbol_cfg["symbol"].iloc[0]
+    tick_size = tick_size_by_symbol.get(str(symbol).upper())
+    if tick_size is None:
+        print(f"[WARN] symbol={symbol} tickSize missing from exchangeInfo; using spread_max bps fallback")
     n_cfg = len(params_all)
     if n_cfg == 0:
         return pd.DataFrame()
@@ -449,10 +532,13 @@ def _run_for_symbol(
             vol_rolling_by_t=vol_by_t,
             vol1m=vol1m,
             avg_vol_by_v=avg_by_v,
+            bid_px=bid_px,
+            ask_px=ask_px,
             spread_bps=spread_bps,
             funding_bps=funding_bps,
             opening_loss_bps=opening_loss_bps,
             params=params,
+            tick_size=tick_size,
         )
         pf = run_grid_backtest(
             close=close,
@@ -530,6 +616,10 @@ def main() -> None:
     out_config_map_csv = args.out_config_map_csv.strip() or str(output_dir / f"backtest_config_{run_date}.csv")
     fee_bps = float(cfg.get("fee_bps", 4.0))
     slippage_bps = float(cfg.get("slippage_bps", 0.0))
+    tick_size_by_symbol = fetch_tick_sizes_from_exchange_info(
+        symbols=cfg_map["symbol"].drop_duplicates().tolist(),
+        exchange_info_url=str(cfg.get("exchange_info_url", "https://fapi.asterdex.com/fapi/v1/exchangeInfo")),
+    )
 
     write_config_map_csv(cfg_map, csv_path=Path(out_config_map_csv))
     all_inputs = _load_inputs_all(inputs_path)
@@ -544,6 +634,7 @@ def main() -> None:
         ranked = _run_for_symbol(
             sym_inputs,
             sym_cfg,
+            tick_size_by_symbol=tick_size_by_symbol,
             fee_bps=fee_bps,
             slippage_bps=slippage_bps,
             chunk_size=args.chunk_size,

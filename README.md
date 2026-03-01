@@ -111,7 +111,8 @@ Entry signal requires:
 2. Indicator 2 (volume regime):
    - `bar_volume > n * rolling_avg_volume(V)`
 3. Blockers pass:
-   - spread <= max spread
+   - spread <= `2 * PRICE_FILTER.tickSize` (from `exchangeInfo`)
+   - fallback if tickSize unavailable: spread <= `max_spread` raw-price cap
    - |funding| <= max funding bps
    - opening loss <= min(10, max(5, 2 * spread_bps))
 

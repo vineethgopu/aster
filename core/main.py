@@ -98,6 +98,46 @@ def _parse_hhmm_utc(s: str) -> int:
     return hh * 60 + mm
 
 
+def _load_tick_size_by_symbol(rest_client: Any, symbols: list[str]) -> Dict[str, float]:
+    """
+    Read PRICE_FILTER.tickSize from exchangeInfo for the requested symbols.
+    """
+    want = {s.strip().upper() for s in symbols if s.strip()}
+    if not want:
+        return {}
+    try:
+        info = rest_client.exchange_info()
+        data = info.get("data") if isinstance(info, dict) and isinstance(info.get("data"), dict) else info
+        syms = data.get("symbols") if isinstance(data, dict) else None
+        if not isinstance(syms, list):
+            print(f"[WARN] Unexpected exchange_info format for tick sizes: {info}")
+            return {}
+
+        out: Dict[str, float] = {}
+        for s in syms:
+            if not isinstance(s, dict):
+                continue
+            sym = str(s.get("symbol", "")).upper()
+            if sym not in want:
+                continue
+            filters = s.get("filters")
+            if not isinstance(filters, list):
+                continue
+            for f in filters:
+                if not isinstance(f, dict):
+                    continue
+                if str(f.get("filterType", "")) != "PRICE_FILTER":
+                    continue
+                tick = _safe_float(f.get("tickSize"))
+                if tick is not None and tick > 0:
+                    out[sym] = float(tick)
+                break
+        return out
+    except Exception as e:
+        print(f"[WARN] failed to load tick sizes from exchangeInfo: {e}")
+        return {}
+
+
 def _utc_minute_of_day(ts_ms: int) -> tuple[int, datetime]:
     dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
     return dt.hour * 60 + dt.minute, dt
@@ -371,6 +411,7 @@ if __name__ == "__main__":
     parser.add_argument("--n", type=float, default=1.3)
     parser.add_argument("--V", type=int, default=30)
     parser.add_argument("--max_spread", type=float, default=0.2)
+    parser.add_argument("--max_spread_ticks", type=float, default=2.0)
     parser.add_argument("--max_funding_abs_bps", type=float, default=1.5)
 
     parser.add_argument("--enable_trading", type=_to_bool, default=False)
@@ -414,12 +455,19 @@ if __name__ == "__main__":
         raise ValueError("--target_leverage must be > 0")
     if args.order_notional is not None and args.order_notional <= 0:
         raise ValueError("--order_notional must be > 0 when provided")
+    if args.max_spread_ticks <= 0:
+        raise ValueError("--max_spread_ticks must be > 0")
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
     entry_halt_min = _parse_hhmm_utc(args.entry_halt_utc)
     force_exit_min = _parse_hhmm_utc(args.force_exit_utc)
 
     client = AsterClient(symbols=symbols, log_dir=args.log_dir, delete_logs=args.delete_logs)
+    tick_size_by_symbol = _load_tick_size_by_symbol(client.rest, symbols)
+    if tick_size_by_symbol:
+        print(f"[TICK_SIZE] {tick_size_by_symbol}")
+    else:
+        print("[TICK_SIZE] unavailable; spread blocker will use fallback --max_spread")
     strat = Strategy(
         StrategyConfig(
             k=args.k,
@@ -427,7 +475,9 @@ if __name__ == "__main__":
             n=args.n,
             v_window=args.V,
             max_spread=args.max_spread,
+            max_spread_ticks=args.max_spread_ticks,
             max_funding_abs_bps=args.max_funding_abs_bps,
+            tick_size_by_symbol=tick_size_by_symbol,
         ),
         symbols=symbols,
     )
