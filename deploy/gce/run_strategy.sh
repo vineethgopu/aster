@@ -67,6 +67,9 @@ CMD=(python main.py \
 if [[ -n "${ASTER_ORDER_NOTIONAL:-}" ]]; then
   CMD+=(--order_notional "${ASTER_ORDER_NOTIONAL}")
 fi
+if [[ -n "${ASTER_CONFIG_CURRENT_FILE:-}" ]]; then
+  CMD+=(--config_current_file "${ASTER_CONFIG_CURRENT_FILE}")
+fi
 
 # exec replaces shell with python process so systemd tracks true PID.
 exec "${CMD[@]}"

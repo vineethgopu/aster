@@ -855,6 +855,15 @@ sudo nano /opt/aster/deploy/gce/aster.env
 sudo systemctl restart aster
 ```
 
+Optional per-symbol runtime config:
+- Set `ASTER_CONFIG_CURRENT_FILE=/opt/aster/core/config_current.json` in `aster.env`.
+- `main.py` will load symbol-specific params at startup (with fallback to CLI/env scalar defaults).
+- Example template:
+  - `core/config_current.example.json`
+- Expected JSON shapes:
+  - `{ "default": {...}, "symbols": { "BTCUSDT": {...}, "ETHUSDT": {...} } }`
+  - or direct map `{ "BTCUSDT": {...}, "ETHUSDT": {...} }`
+
 #### 6.4) Other important update flows
 
 Secret rotation:
