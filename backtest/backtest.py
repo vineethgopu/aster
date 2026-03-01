@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import itertools
 import json
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -344,6 +345,7 @@ def _run_for_symbol(
     symbol_cfg: pd.DataFrame,
     fee_bps: float,
     slippage_bps: float,
+    chunk_size: int,
 ) -> pd.DataFrame:
     inputs_df = inputs_df.set_index("timestamp").sort_index()
     t_values = symbol_cfg["T"].astype(int).tolist()
@@ -392,38 +394,68 @@ def _run_for_symbol(
     for key in list(avg_by_v.keys()):
         avg_by_v[key] = avg_by_v[key][valid]
 
-    params = symbol_cfg.drop(columns=["symbol"]).copy().set_index("config_id")
-    le, lx, se, sx = build_signals(
-        close=close,
-        ret_bps=ret_bps,
-        vol_rolling_by_t=vol_by_t,
-        vol1m=vol1m,
-        avg_vol_by_v=avg_by_v,
-        spread_bps=spread_bps,
-        funding_bps=funding_bps,
-        opening_loss_bps=opening_loss_bps,
-        params=params,
-    )
-    pf = run_grid_backtest(
-        close=close,
-        open_px=open_px,
-        high_px=high_px,
-        low_px=low_px,
-        tw_bid_px=tw_bid_px,
-        tw_ask_px=tw_ask_px,
-        opening_loss_bps=opening_loss_bps,
-        funding_bps=funding_bps,
-        long_entries=le,
-        long_exits=lx,
-        short_entries=se,
-        short_exits=sx,
-        params=params,
-        fee_bps=fee_bps,
-        slippage_bps=slippage_bps,
-    )
-    ranked = build_ranked_metrics(pf).join(params, how="left")
-    ranked.insert(0, "symbol", symbol_cfg["symbol"].iloc[0])
-    return ranked
+    params_all = symbol_cfg.drop(columns=["symbol"]).copy().set_index("config_id")
+    symbol = symbol_cfg["symbol"].iloc[0]
+    n_cfg = len(params_all)
+    if n_cfg == 0:
+        return pd.DataFrame()
+
+    if chunk_size <= 0:
+        chunk_size = n_cfg
+
+    ranked_chunks: List[pd.DataFrame] = []
+    for i, start in enumerate(range(0, n_cfg, chunk_size), start=1):
+        end = min(start + chunk_size, n_cfg)
+        params = params_all.iloc[start:end]
+        print(
+            f"[CHUNK] symbol={symbol} chunk={i} start={start} end={end} size={len(params)} total_cfg={n_cfg}"
+        )
+        le, lx, se, sx = build_signals(
+            close=close,
+            ret_bps=ret_bps,
+            vol_rolling_by_t=vol_by_t,
+            vol1m=vol1m,
+            avg_vol_by_v=avg_by_v,
+            spread_bps=spread_bps,
+            funding_bps=funding_bps,
+            opening_loss_bps=opening_loss_bps,
+            params=params,
+        )
+        pf = run_grid_backtest(
+            close=close,
+            open_px=open_px,
+            high_px=high_px,
+            low_px=low_px,
+            tw_bid_px=tw_bid_px,
+            tw_ask_px=tw_ask_px,
+            opening_loss_bps=opening_loss_bps,
+            funding_bps=funding_bps,
+            long_entries=le,
+            long_exits=lx,
+            short_entries=se,
+            short_exits=sx,
+            params=params,
+            fee_bps=fee_bps,
+            slippage_bps=slippage_bps,
+        )
+        ranked = build_ranked_metrics(pf).join(params, how="left")
+        ranked.insert(0, "symbol", symbol)
+        ranked_chunks.append(ranked)
+
+        # Release heavy arrays between chunks to lower peak memory.
+        del le, lx, se, sx, pf, ranked, params
+        gc.collect()
+
+    all_ranked = pd.concat(ranked_chunks, axis=0)
+    return all_ranked.sort_values("total_pnl", ascending=False)
+
+
+def _parse_symbols_filter(raw: str) -> Optional[List[str]]:
+    raw = str(raw or "").strip()
+    if not raw:
+        return None
+    syms = [s.strip().upper() for s in raw.split(",") if s.strip()]
+    return syms or None
 
 
 def main() -> None:
@@ -432,6 +464,18 @@ def main() -> None:
     parser.add_argument("--inputs_csv", type=str, default="")
     parser.add_argument("--out_ranked_csv", type=str, default="")
     parser.add_argument("--out_config_map_csv", type=str, default="")
+    parser.add_argument(
+        "--symbols",
+        type=str,
+        default="",
+        help="Optional comma-separated symbol filter, e.g. ETHUSDT or BTCUSDT,ETHUSDT",
+    )
+    parser.add_argument(
+        "--chunk_size",
+        type=int,
+        default=1000,
+        help="Max number of configs processed per chunk per symbol (reduces memory).",
+    )
     args = parser.parse_args()
 
     cfg = load_config(Path(args.config_file))
@@ -439,6 +483,11 @@ def main() -> None:
     if not isinstance(symbol_cfg, dict):
         raise ValueError("config.symbols must be an object keyed by symbol")
     cfg_map = build_config_map(symbol_cfg=symbol_cfg)
+    symbols_filter = _parse_symbols_filter(args.symbols)
+    if symbols_filter is not None:
+        cfg_map = cfg_map[cfg_map["symbol"].isin(symbols_filter)].copy()
+        if cfg_map.empty:
+            raise ValueError(f"No configs left after --symbols filter: {symbols_filter}")
 
     inputs_csv = args.inputs_csv.strip() or str(cfg.get("inputs_csv", "./backtest/backtest_inputs.csv"))
     inputs_path = Path(inputs_csv)
@@ -458,7 +507,13 @@ def main() -> None:
             print(f"[SKIP] {sym}: no rows in inputs CSV")
             continue
         sym_cfg = cfg_map[cfg_map["symbol"] == sym].copy()
-        ranked = _run_for_symbol(sym_inputs, sym_cfg, fee_bps=fee_bps, slippage_bps=slippage_bps)
+        ranked = _run_for_symbol(
+            sym_inputs,
+            sym_cfg,
+            fee_bps=fee_bps,
+            slippage_bps=slippage_bps,
+            chunk_size=args.chunk_size,
+        )
         ranked_parts.append(ranked)
         print(f"\n=== {sym} ===")
         print(ranked)

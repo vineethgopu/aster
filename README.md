@@ -226,6 +226,9 @@ Main components:
 - Enforces required config keys for each symbol:
   - `k, T, n, V, tp_bps, sl_bps, activation_bps, activation_buffer_bps, callback_bps, min_tp_gap_bps, spread_max, funding_max`
 - `build_signals`: vectorized long/short entries + exits across all configs
+- Chunked execution per symbol to reduce peak memory:
+  - `--chunk_size` controls max configs per in-memory batch (default 1000)
+  - `--symbols` optionally limits run to one or more symbols
 - `run_grid_backtest`: `vbt.Portfolio.from_signals(...)` with:
   - intrabar stop evaluation using `open/high/low`
   - execution price anchored to `tw_mid = (tw_bid_px + tw_ask_px)/2`
@@ -280,7 +283,8 @@ python backtest/backtest.py \
   --config_file ./backtest/config_grid.json \
   --inputs_csv ./backtest/backtest_inputs.csv \
   --out_config_map_csv ./backtest/results/config_mapping.csv \
-  --out_ranked_csv ./backtest/results/ranked_metrics.csv
+  --out_ranked_csv ./backtest/results/ranked_metrics.csv \
+  --chunk_size 1000
 ```
 
 ## GCE Deployment (VM + systemd)
@@ -603,9 +607,11 @@ sudo /opt/aster/deploy/gce/toggle_production.sh status
 ### 5.1) Enable weekly backtest timer (optional)
 
 This schedules a weekly backtest run at `Sun 00:20 UTC`:
-- Builds `backtest_inputs.csv` from BigQuery
-- Runs config-driven VectorBT sweep
-- Writes:
+- Runs through symbols sequentially (one symbol at a time) via `run_backtest.sh`
+- For each symbol:
+  - builds symbol-specific inputs from BigQuery
+  - runs config-driven VectorBT sweep with chunking
+- Combines per-symbol outputs and writes:
   - `/opt/aster/backtest/results/config_mapping.csv`
   - `/opt/aster/backtest/results/ranked_metrics.csv`
 
@@ -613,6 +619,8 @@ Defaults in `run_backtest.sh`:
 - if `ASTER_BACKTEST_START_DATE`/`ASTER_BACKTEST_END_DATE` are empty:
   - `end_date = UTC yesterday` (Saturday for the scheduled Sunday run)
   - `start_date = UTC 28 days ago` (Sunday, 4 weeks before `end_date`)
+- `ASTER_BACKTEST_CHUNK_SIZE=1000` limits configs processed per symbol chunk
+- symbols are sourced from `ASTER_BACKTEST_QUERY_SYMBOLS` or config symbol keys
 
 ```bash
 sudo cp /opt/aster/deploy/gce/backtest/aster-backtest.service /etc/systemd/system/aster-backtest.service
@@ -628,6 +636,11 @@ Manual one-off run:
 sudo /opt/aster/deploy/gce/backtest/run_backtest.sh
 journalctl -u aster-backtest -n 200 --no-pager
 ```
+
+Service wiring:
+- `deploy/gce/backtest/aster-backtest.service` runs:
+  - `ExecStart=/opt/aster/deploy/gce/backtest/run_backtest.sh`
+- Any updates to `run_backtest.sh` automatically apply to the timer-triggered weekly run once unit files are refreshed.
 
 ### 5.2) Enable email reports (optional)
 
