@@ -15,6 +15,8 @@ from aster.error import ClientError
 # Helpers
 # ----------------------------
 
+TERMINAL_ORDER_STATUSES = {"FILLED", "CANCELED", "CANCELLED", "REJECTED", "EXPIRED"}
+
 def _safe_float(x: Any) -> Optional[float]:
     try:
         if x is None:
@@ -315,20 +317,39 @@ class OrderPlacer:
         taker_filled_qty = 0.0
         taker_avg_px = None
         taker_q = None
+        taker_lifecycle: List[Dict[str, Any]] = []
+        taker_trade_stats: Dict[str, Any] = {}
+        taker_status = ""
         if taker_order_id is not None:
-            try:
-                taker_q = self._query_order(symbol, taker_order_id)
-                _, taker_filled_qty, taker_avg_px = self._parse_query(taker_q)
-            except ClientError:
-                pass
+            confirm = self._confirm_order_fill(
+                symbol=symbol,
+                order_id=taker_order_id,
+                timeout_ms=1500,
+            )
+            taker_q = confirm.get("last_query")
+            taker_filled_qty = float(confirm.get("filled_qty") or 0.0)
+            taker_avg_px = _safe_float(confirm.get("avg_px"))
+            taker_lifecycle = list(confirm.get("snapshots") or [])
+            taker_trade_stats = dict(confirm.get("trade_stats") or {})
+            taker_status = str(confirm.get("status") or "")
+            if taker_lifecycle:
+                self.log.info(
+                    f"[ENTRY_CONFIRM] {symbol} order_id={taker_order_id} status_path="
+                    f"{self._status_path(taker_lifecycle)}"
+                )
 
         if (taker_filled_qty or 0.0) <= 0 or taker_avg_px is None or taker_avg_px <= 0:
             res = EntryResult(
                 ok=False, symbol=symbol, side=side, requested_qty=quantity,
                 filled_qty=taker_filled_qty or 0.0, vwap_fill_px=taker_avg_px,
                 maker_order_id=None, taker_order_id=taker_order_id,
-                notes="Entry failed (no fills).",
-                raw={"taker_new": taker_resp, "taker_query": taker_q},
+                notes=f"Entry failed (no fills). status={taker_status or 'UNKNOWN'}",
+                raw={
+                    "taker_new": taker_resp,
+                    "taker_query": taker_q,
+                    "taker_lifecycle": taker_lifecycle,
+                    "taker_trade_stats": taker_trade_stats,
+                },
             )
             return None, res
 
@@ -372,6 +393,8 @@ class OrderPlacer:
             raw={
                 "taker_new": taker_resp,
                 "taker_query": taker_q,
+                "taker_lifecycle": taker_lifecycle,
+                "taker_trade_stats": taker_trade_stats,
                 "taker_limit_price": taker_price,
                 "take_profit_order_id": pos.take_profit_order_id,
                 "stop_loss_order_id": pos.stop_loss_order_id,
@@ -664,12 +687,26 @@ class OrderPlacer:
         filled_qty = 0.0
         avg_px = None
         close_q = None
+        close_lifecycle: List[Dict[str, Any]] = []
+        close_trade_stats: Dict[str, Any] = {}
+        close_status = ""
         if close_order_id is not None:
-            try:
-                close_q = self._query_order(pos.symbol, close_order_id)
-                _, filled_qty, avg_px = self._parse_query(close_q)
-            except ClientError:
-                pass
+            confirm = self._confirm_order_fill(
+                symbol=pos.symbol,
+                order_id=close_order_id,
+                timeout_ms=1500,
+            )
+            close_q = confirm.get("last_query")
+            filled_qty = float(confirm.get("filled_qty") or 0.0)
+            avg_px = _safe_float(confirm.get("avg_px"))
+            close_lifecycle = list(confirm.get("snapshots") or [])
+            close_trade_stats = dict(confirm.get("trade_stats") or {})
+            close_status = str(confirm.get("status") or "")
+            if close_lifecycle:
+                self.log.info(
+                    f"[EXIT_CONFIRM] {pos.symbol} order_id={close_order_id} status_path="
+                    f"{self._status_path(close_lifecycle)}"
+                )
 
         return ExitResult(
             ok=(filled_qty > 0),
@@ -678,8 +715,13 @@ class OrderPlacer:
             closed_qty=filled_qty,
             close_vwap_px=avg_px if (avg_px is not None and avg_px > 0) else None,
             close_order_id=close_order_id,
-            notes=notes,
-            raw={"close_new": close_resp, "close_query": close_q},
+            notes=f"{notes} status={close_status or 'UNKNOWN'}".strip(),
+            raw={
+                "close_new": close_resp,
+                "close_query": close_q,
+                "close_lifecycle": close_lifecycle,
+                "close_trade_stats": close_trade_stats,
+            },
         )
 
     # ----------------------------
@@ -823,6 +865,7 @@ class OrderPlacer:
             ("SL", pos.stop_loss_order_id),
             ("TSL", pos.trailing_stop_order_id),
         ]
+        check_rows: List[Dict[str, Any]] = []
         for reason, oid in checks:
             if oid is None:
                 continue
@@ -831,13 +874,31 @@ class OrderPlacer:
                 status, filled_qty, avg_px = self._parse_query(q)
                 d = q.get("data") if isinstance(q, dict) and isinstance(q.get("data"), dict) else q
                 update_time = _safe_float(d.get("updateTime")) if isinstance(d, dict) else None
+                check_rows.append(
+                    {
+                        "reason": reason,
+                        "order_id": oid,
+                        "status": status,
+                        "filled_qty": float(filled_qty or 0.0),
+                        "avg_price": avg_px,
+                        "update_time_ms": int(update_time) if update_time is not None else None,
+                    }
+                )
                 if status.upper() == "FILLED" and (filled_qty or 0.0) > 0:
+                    trade_stats = self.get_order_trade_stats(
+                        symbol=pos.symbol,
+                        order_id=oid,
+                        start_time_ms=pos.opened_time_ms - 15 * 60_000,
+                        end_time_ms=_now_ms() + 60_000,
+                    )
                     return {
                         "reason": reason,
                         "order_id": oid,
                         "filled_qty": float(filled_qty or 0.0),
                         "avg_price": avg_px,
                         "update_time_ms": int(update_time) if update_time is not None else None,
+                        "trade_stats": trade_stats,
+                        "checks": check_rows,
                         "raw": q,
                     }
             except Exception as e:
@@ -849,6 +910,7 @@ class OrderPlacer:
             "filled_qty": 0.0,
             "avg_price": None,
             "update_time_ms": None,
+            "checks": check_rows,
             "raw": {},
         }
 
@@ -970,14 +1032,113 @@ class OrderPlacer:
         avg_px = _safe_float(d.get("avgPrice"))
         return status, executed_qty, avg_px
 
+    @staticmethod
+    def _status_path(snapshots: List[Dict[str, Any]]) -> str:
+        path: List[str] = []
+        prev = None
+        for s in snapshots:
+            st = str(s.get("status") or "")
+            if not st:
+                continue
+            if st != prev:
+                path.append(st)
+                prev = st
+        return "->".join(path) if path else "UNKNOWN"
+
+    def _confirm_order_fill(
+        self,
+        symbol: str,
+        order_id: int,
+        timeout_ms: int = 1500,
+        poll_interval_s: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        Poll order status briefly to handle API propagation lag and return a
+        lightweight lifecycle trail + fill stats.
+        """
+        wait_s = max(0.05, poll_interval_s if poll_interval_s is not None else self.poll_interval_s)
+        start_ms = _now_ms()
+        deadline_ms = start_ms + max(0, int(timeout_ms))
+        snapshots: List[Dict[str, Any]] = []
+        last_query: Optional[Dict[str, Any]] = None
+        status = ""
+        filled_qty = 0.0
+        avg_px: Optional[float] = None
+
+        while True:
+            try:
+                q = self._query_order(symbol, order_id)
+                last_query = q
+                st, q_qty, q_avg = self._parse_query(q)
+                d = q.get("data") if isinstance(q, dict) and isinstance(q.get("data"), dict) else q
+                upd = _safe_float(d.get("updateTime")) if isinstance(d, dict) else None
+                status = st
+                if q_qty is not None:
+                    filled_qty = float(q_qty)
+                if q_avg is not None and q_avg > 0:
+                    avg_px = float(q_avg)
+                snapshots.append(
+                    {
+                        "ts_ms": _now_ms(),
+                        "status": st,
+                        "executed_qty": q_qty,
+                        "avg_price": q_avg,
+                        "update_time_ms": int(upd) if upd is not None else None,
+                    }
+                )
+                if st.upper() in TERMINAL_ORDER_STATUSES:
+                    break
+            except Exception as e:
+                snapshots.append({"ts_ms": _now_ms(), "status": "QUERY_ERROR", "error": str(e)})
+
+            if _now_ms() >= deadline_ms:
+                break
+            time.sleep(wait_s)
+
+        trade_stats = self.get_order_trade_stats(
+            symbol=symbol,
+            order_id=order_id,
+            start_time_ms=start_ms - 5 * 60_000,
+            end_time_ms=_now_ms() + 60_000,
+        )
+        ts_qty = _safe_float(trade_stats.get("executed_qty"))
+        ts_avg = _safe_float(trade_stats.get("avg_price"))
+        if ts_qty is not None and ts_qty > 0:
+            filled_qty = float(ts_qty)
+        if ts_avg is not None and ts_avg > 0:
+            avg_px = float(ts_avg)
+
+        return {
+            "status": status,
+            "filled_qty": filled_qty,
+            "avg_px": avg_px,
+            "snapshots": snapshots,
+            "last_query": last_query,
+            "trade_stats": trade_stats,
+        }
+
     # ----------------------------
-    # Internal: market data reads (from your WS cache client)
+    # Internal: market data reads (REST-first touch with cache fallback)
     # ----------------------------
 
     def _get_touch(self, symbol: str, price_source: Any) -> Tuple[Optional[float], Optional[float]]:
         """
-        Expects price_source.latest_bbo[symbol] with bid_px/ask_px (dict or object).
+        Prefer direct REST book_ticker (most current touch at submit time).
+        Fallback to in-process cache (price_source.latest_bbo) if REST fails.
         """
+        # 1) REST touch
+        try:
+            bt = self.rest.book_ticker(symbol=symbol)
+            d = bt.get("data") if isinstance(bt, dict) and isinstance(bt.get("data"), dict) else bt
+            if isinstance(d, dict):
+                bid_px = _safe_float(d.get("bidPrice", d.get("b")))
+                ask_px = _safe_float(d.get("askPrice", d.get("a")))
+                if bid_px is not None and ask_px is not None:
+                    return bid_px, ask_px
+        except Exception:
+            pass
+
+        # 2) Cache fallback
         bbo = getattr(price_source, "latest_bbo", {}).get(symbol)
         if bbo is None:
             return None, None

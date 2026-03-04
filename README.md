@@ -127,6 +127,11 @@ Entry logic:
 - Taker-only IOC LIMIT at touch
   - BUY at ask
   - SELL at bid
+- Touch read is REST-first (`book_ticker`) with cache fallback
+- Short confirmation loop after submit:
+  - polls order status until terminal/timeout
+  - reconciles fills with account trade rows
+  - returns false only after confirm path shows no fill
 - Quantity/price normalization with exchange filters from `exchange_info`
   - `PRICE_FILTER.tickSize`
   - `LOT_SIZE.stepSize/minQty/maxQty`
@@ -140,6 +145,7 @@ Exit logic (armed after fill):
 - `STOP_MARKET` (MARK_PRICE trigger)
 - `TRAILING_STOP_MARKET` (activation + callback)
 - `reduceOnly=True` for all exit triggers
+- Exit close orders use the same short confirmation loop + trade-row reconciliation
 - Trigger levels are defined in bps from entry price (not multiplier/fraction config)
 - Trailing activation price is computed from `trailing_activation_bps`
 - Sibling exit cleanup: when position is detected flat, remaining TP/SL/trailing orders are cancelled
@@ -188,6 +194,8 @@ Flow:
      - submit entry
      - arm exits
    - if position exists:
+     - continuously monitor armed TP/SL/TSL orders for fills each loop
+     - on detected trigger fill + flat position: finalize lifecycle row immediately
      - check if flat on exchange, cleanup siblings
      - do not re-enter position
      - run margin kill check
@@ -596,8 +604,9 @@ sudo nano deploy/gce/aster.env
 
 # Daily data pipeline:
 # - ASTER_BQ_ENABLE_DAILY_BATCH=true
-# - ASTER_BQ_PROJECT=<PROJECT_ID> (optional; defaults from VM metadata)
+# - ASTER_BQ_PROJECT=project-c2ebd65c-60ef-4434-b2f
 # - ASTER_BQ_DATASET=aster
+# - ASTER_BQ_LOCATION=US
 # - ASTER_LOG_RETENTION_DAYS=7
 
 # Ownership model (important):

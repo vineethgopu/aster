@@ -754,6 +754,57 @@ if __name__ == "__main__":
                     tracker = trade_trackers.get(sym)
                     if tracker is not None:
                         _update_trade_tracker(tracker, snap)
+                        tracker.setdefault("seen_exit_order_ids", set())
+
+                    # Continuously monitor armed exit triggers (TP/SL/TSL) so we can
+                    # capture lifecycle logs immediately when the exchange reports fill.
+                    detect = order_placer.detect_filled_exit_order(pos)
+                    detected_order_id = detect.get("order_id")
+                    detected_filled_qty = float(detect.get("filled_qty") or 0.0)
+                    if detected_order_id is not None and detected_filled_qty > 0:
+                        already_seen = False
+                        if tracker is not None:
+                            seen_exit_ids = tracker.get("seen_exit_order_ids")
+                            if isinstance(seen_exit_ids, set):
+                                if detected_order_id in seen_exit_ids:
+                                    already_seen = True
+                                else:
+                                    seen_exit_ids.add(detected_order_id)
+                        if not already_seen:
+                            live_qty_after_trigger = order_placer.get_position_abs_qty(sym)
+                            print(
+                                (
+                                    f"[EXIT_TRIGGER_FILL] {sym} detected_exit={detect} "
+                                    f"live_qty_after_trigger={live_qty_after_trigger}"
+                                )
+                            )
+                            if live_qty_after_trigger is None or live_qty_after_trigger <= 0:
+                                if tracker is not None:
+                                    _finalize_trade(
+                                        symbol=sym,
+                                        pos=pos,
+                                        tracker=tracker,
+                                        exit_reason=detect.get("reason") or "UNKNOWN",
+                                        exit_order_id=detected_order_id,
+                                        exit_send_time_ms_hint=None,
+                                        exit_fill_price_hint=_safe_float(detect.get("avg_price")),
+                                        exit_fill_time_ms_hint=(int(detect.get("update_time_ms")) if detect.get("update_time_ms") is not None else None),
+                                        order_placer=order_placer,
+                                        log_dir=args.log_dir,
+                                        send_trade_alert_email=args.trade_alert_email,
+                                    )
+                                order_placer.cancel_sibling_exit_orders(pos)
+                                del positions[sym]
+                                trade_trackers.pop(sym, None)
+                                cooldown_until_ms[sym] = ts_ms + args.reentry_cooldown_min * 60_000
+                                continue
+
+                            # Defensive: if exchange reports trigger fill but still has
+                            # residual position (rare), keep tracking with refreshed qty.
+                            try:
+                                pos.qty = float(live_qty_after_trigger)
+                            except Exception:
+                                pass
 
                     if daily_drawdown_blocked:
                         last_attempt = last_force_exit_attempt_ms.get(sym, 0)
@@ -1014,6 +1065,7 @@ if __name__ == "__main__":
                         "order_lifetime_low": None,
                         "order_lifetime_close": None,
                         "seen_trade_ids": set(),
+                        "seen_exit_order_ids": set(),
                     }
                     print(
                         (
