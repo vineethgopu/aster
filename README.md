@@ -20,7 +20,8 @@ This repository contains:
 │   ├── markPrice_YYYYMMDD.csv
 │   ├── aggTrade_1s_YYYYMMDD.csv
 │   ├── depth5_YYYYMMDD.csv
-│   └── orders_YYYYMMDD.csv
+│   ├── orders_YYYYMMDD.csv
+│   └── orders.csv
 ├── backtest/
 │   ├── build_backtest_inputs.py
 │   ├── backtest.py
@@ -166,7 +167,9 @@ Cleanup helper:
 ### `core/main.py`
 Purpose:
 - Runtime orchestrator for polling, strategy evaluation, and optional live trading
-- Appends trade lifecycle rows to `logs/orders_YYYYMMDD.csv` on each completed exit
+- Appends trade lifecycle rows to both:
+  - `logs/orders_YYYYMMDD.csv` (dated)
+  - `logs/orders.csv` (rolling)
 
 Flow:
 1. Parse CLI params
@@ -193,6 +196,8 @@ Flow:
      - compute order qty from `order_notional`
      - submit entry
      - arm exits
+     - if exchange fill arrives late (post-submit propagation lag), recover the
+       live position from order/account state and arm exits + tracker anyway
    - if position exists:
      - continuously monitor armed TP/SL/TSL orders for fills each loop
      - on detected trigger fill + flat position: finalize lifecycle row immediately
