@@ -304,19 +304,14 @@ def _send_trade_alert_email(subject: str, body: str) -> None:
 def _append_trade_lifecycle_row(log_dir: str, row: Dict[str, Any]) -> None:
     exit_ts_ms = int(row.get("exit_fill_time_ms") or _now_ms())
     date_str = datetime.fromtimestamp(exit_ts_ms / 1000, tz=timezone.utc).strftime("%Y%m%d")
-    row_out = {k: row.get(k) for k in TRADE_LIFECYCLE_FIELDS}
-    paths = [
-        Path(log_dir) / f"orders_{date_str}.csv",
-        Path(log_dir) / "orders.csv",
-    ]
-    for path in paths:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        needs_header = (not path.exists()) or path.stat().st_size == 0
-        with path.open("a", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=TRADE_LIFECYCLE_FIELDS)
-            if needs_header:
-                w.writeheader()
-            w.writerow(row_out)
+    path = Path(log_dir) / f"orders_{date_str}.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    needs_header = (not path.exists()) or path.stat().st_size == 0
+    with path.open("a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=TRADE_LIFECYCLE_FIELDS)
+        if needs_header:
+            w.writeheader()
+        w.writerow({k: row.get(k) for k in TRADE_LIFECYCLE_FIELDS})
 
 
 def _map_exit_reason(reason: str) -> str:
@@ -370,34 +365,6 @@ def _update_trade_tracker(tracker: Dict[str, Any], snap: Dict[str, Any]) -> None
         tracker["order_lifetime_close"] = px
         tracker["order_lifetime_high"] = max(float(tracker["order_lifetime_high"]), px)
         tracker["order_lifetime_low"] = min(float(tracker["order_lifetime_low"]), px)
-
-
-def _new_trade_tracker(
-    *,
-    entry_order_id: Optional[int],
-    entry_send_time_ms: int,
-    entry_fill_time_ms: int,
-    entry_fill_price: float,
-    fill_quantity: float,
-    mark_px_now: Optional[float],
-) -> Dict[str, Any]:
-    return {
-        "entry_order_id": entry_order_id,
-        "entry_send_time_ms": entry_send_time_ms,
-        "entry_fill_time_ms": entry_fill_time_ms,
-        "entry_fill_price": entry_fill_price,
-        "fill_quantity": fill_quantity,
-        "entry_mark_price": mark_px_now,
-        "exit_mark_price": mark_px_now,
-        "order_lifetime_market_volume_quantity": 0.0,
-        "order_lifetime_market_volume_notional": 0.0,
-        "order_lifetime_open": None,
-        "order_lifetime_high": None,
-        "order_lifetime_low": None,
-        "order_lifetime_close": None,
-        "seen_trade_ids": set(),
-        "seen_exit_order_ids": set(),
-    }
 
 
 def _finalize_trade(
@@ -1083,14 +1050,23 @@ if __name__ == "__main__":
                     positions[sym] = pos
                     mark_px_now = _safe_float((snap.get("funding") or {}).get("mark_px"))
                     entry_fill_time_ms = _extract_update_time_ms(entry_res.raw.get("taker_query") if isinstance(entry_res.raw, dict) else None) or _now_ms()
-                    trade_trackers[sym] = _new_trade_tracker(
-                        entry_order_id=pos.taker_order_id,
-                        entry_send_time_ms=entry_send_ms,
-                        entry_fill_time_ms=entry_fill_time_ms,
-                        entry_fill_price=pos.entry_vwap_px,
-                        fill_quantity=pos.qty,
-                        mark_px_now=mark_px_now,
-                    )
+                    trade_trackers[sym] = {
+                        "entry_order_id": pos.taker_order_id,
+                        "entry_send_time_ms": entry_send_ms,
+                        "entry_fill_time_ms": entry_fill_time_ms,
+                        "entry_fill_price": pos.entry_vwap_px,
+                        "fill_quantity": pos.qty,
+                        "entry_mark_price": mark_px_now,
+                        "exit_mark_price": mark_px_now,
+                        "order_lifetime_market_volume_quantity": 0.0,
+                        "order_lifetime_market_volume_notional": 0.0,
+                        "order_lifetime_open": None,
+                        "order_lifetime_high": None,
+                        "order_lifetime_low": None,
+                        "order_lifetime_close": None,
+                        "seen_trade_ids": set(),
+                        "seen_exit_order_ids": set(),
+                    }
                     print(
                         (
                             f"[ENTRY_LEVELS] {sym} position={pos} "
@@ -1107,81 +1083,6 @@ if __name__ == "__main__":
                             f"order_notional={effective_order_notional:.6f}"
                         )
                     )
-                else:
-                    # Recovery path for rare propagation lag cases where entry() can return
-                    # no local PositionState but exchange fills appear shortly after.
-                    recovered_pos: Optional[PositionState] = None
-                    entry_oid = entry_res.taker_order_id
-                    recovery_stats: Dict[str, Any] = {}
-
-                    if entry_oid is not None:
-                        recovery_stats = order_placer.get_order_trade_stats(
-                            symbol=sym,
-                            order_id=entry_oid,
-                            start_time_ms=entry_send_ms - 5 * 60_000,
-                            end_time_ms=ts_ms + 120_000,
-                        )
-                        rec_qty = _safe_float(recovery_stats.get("executed_qty")) or 0.0
-                        rec_px = _safe_float(recovery_stats.get("avg_price")) or 0.0
-                        if rec_qty > 0 and rec_px > 0:
-                            recovered_pos = PositionState(
-                                symbol=sym,
-                                side=side,
-                                qty=float(rec_qty),
-                                entry_vwap_px=float(rec_px),
-                                opened_time_ms=_now_ms(),
-                                taker_order_id=entry_oid,
-                            )
-
-                    if recovered_pos is None:
-                        live_amt = order_placer.get_position_amt(sym)
-                        if live_amt is not None and abs(live_amt) > 0:
-                            rec_side = "BUY" if live_amt > 0 else "SELL"
-                            rec_px = _safe_float(recovery_stats.get("avg_price")) or float(entry_limit_price)
-                            recovered_pos = PositionState(
-                                symbol=sym,
-                                side=rec_side,
-                                qty=abs(float(live_amt)),
-                                entry_vwap_px=float(rec_px),
-                                opened_time_ms=_now_ms(),
-                                taker_order_id=entry_oid,
-                            )
-
-                    if recovered_pos is not None:
-                        try:
-                            trigger_resp = order_placer.place_exit_triggers(
-                                pos=recovered_pos,
-                                take_profit_bps=tp_bps,
-                                stop_loss_bps=sl_bps,
-                                trailing_activation_bps=activation_bps,
-                                trailing_callback_rate=trailing_callback_rate,
-                            )
-                            recovered_pos.take_profit_order_id = trigger_resp.get("take_profit_order_id")
-                            recovered_pos.stop_loss_order_id = trigger_resp.get("stop_loss_order_id")
-                            recovered_pos.trailing_stop_order_id = trigger_resp.get("trailing_stop_order_id")
-                        except Exception as e:
-                            print(f"[ENTRY_RECOVERY_WARN] {sym} failed to arm exits on recovered position: {e}")
-
-                        positions[sym] = recovered_pos
-                        mark_px_now = _safe_float((snap.get("funding") or {}).get("mark_px"))
-                        rec_fill_time = _safe_float(recovery_stats.get("exec_time_ms")) or _now_ms()
-                        trade_trackers[sym] = _new_trade_tracker(
-                            entry_order_id=recovered_pos.taker_order_id,
-                            entry_send_time_ms=entry_send_ms,
-                            entry_fill_time_ms=int(rec_fill_time),
-                            entry_fill_price=recovered_pos.entry_vwap_px,
-                            fill_quantity=recovered_pos.qty,
-                            mark_px_now=mark_px_now,
-                        )
-                        print(
-                            (
-                                f"[ENTRY_RECOVERED] {sym} position={recovered_pos} "
-                                f"order_id={entry_oid} "
-                                f"take_profit_order_id={recovered_pos.take_profit_order_id} "
-                                f"stop_loss_order_id={recovered_pos.stop_loss_order_id} "
-                                f"trailing_stop_order_id={recovered_pos.trailing_stop_order_id}"
-                            )
-                        )
 
             client.n_poll_snapshots += 1
             time.sleep(client.poll_seconds)
