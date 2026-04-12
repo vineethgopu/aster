@@ -63,22 +63,13 @@ def _build_where_and_params(
     return " WHERE " + " AND ".join(clauses), params
 
 
-def _query_table(
+def _run_query_to_df(
     client: bigquery.Client,
-    table_fqn: str,
-    columns: Sequence[str],
-    symbols: Sequence[str],
-    start_date: Optional[date],
-    end_date: Optional[date],
+    *,
+    sql: str,
+    params: Sequence[bigquery.query.ArrayQueryParameter | bigquery.query.ScalarQueryParameter],
 ) -> pd.DataFrame:
-    where_sql, params = _build_where_and_params(symbols=symbols, start_date=start_date, end_date=end_date)
-    sql = f"""
-        SELECT {", ".join(columns)}
-        FROM `{table_fqn}`
-        {where_sql}
-        ORDER BY symbol, ts_unix_ms
-    """
-    cfg = bigquery.QueryJobConfig(query_parameters=params)
+    cfg = bigquery.QueryJobConfig(query_parameters=list(params))
     job = client.query(sql, job_config=cfg)
     result = job.result()
     cols = [field.name for field in result.schema]
@@ -86,6 +77,160 @@ def _query_table(
     if not rows:
         return pd.DataFrame(columns=cols)
     return pd.DataFrame(rows, columns=cols)
+
+
+def _query_kline_minute(
+    client: bigquery.Client,
+    table_fqn: str,
+    symbols: Sequence[str],
+    start_date: Optional[date],
+    end_date: Optional[date],
+) -> pd.DataFrame:
+    where_sql, params = _build_where_and_params(symbols=symbols, start_date=start_date, end_date=end_date)
+    sql = f"""
+        WITH src AS (
+          SELECT
+            symbol,
+            ts_unix_ms,
+            k1_close_ms,
+            k1_open,
+            k1_high,
+            k1_low,
+            k1_close,
+            k1_base_vol,
+            k1_closed,
+            DIV(ts_unix_ms, 60000) * 60000 AS minute_bucket_ms
+          FROM `{table_fqn}`
+          {where_sql}
+        ),
+        ranked AS (
+          SELECT
+            symbol,
+            ts_unix_ms,
+            k1_close_ms,
+            k1_open,
+            k1_high,
+            k1_low,
+            k1_close,
+            k1_base_vol,
+            k1_closed,
+            minute_bucket_ms,
+            ROW_NUMBER() OVER (
+              PARTITION BY symbol, minute_bucket_ms
+              ORDER BY ts_unix_ms DESC
+            ) AS rn
+          FROM src
+        )
+        SELECT
+          symbol,
+          ts_unix_ms,
+          k1_close_ms,
+          k1_open,
+          k1_high,
+          k1_low,
+          k1_close,
+          k1_base_vol,
+          k1_closed,
+          minute_bucket_ms
+        FROM ranked
+        WHERE rn = 1
+        ORDER BY symbol, ts_unix_ms
+    """
+    return _run_query_to_df(client=client, sql=sql, params=params)
+
+
+def _query_book_minute(
+    client: bigquery.Client,
+    table_fqn: str,
+    symbols: Sequence[str],
+    start_date: Optional[date],
+    end_date: Optional[date],
+) -> pd.DataFrame:
+    where_sql, params = _build_where_and_params(symbols=symbols, start_date=start_date, end_date=end_date)
+    sql = f"""
+        WITH src AS (
+          SELECT
+            symbol,
+            ts_unix_ms,
+            bid_px,
+            ask_px,
+            spread,
+            mid,
+            DIV(ts_unix_ms, 60000) * 60000 AS minute_bucket_ms
+          FROM `{table_fqn}`
+          {where_sql}
+        ),
+        agg AS (
+          SELECT
+            symbol,
+            minute_bucket_ms,
+            ARRAY_AGG(
+              STRUCT(ts_unix_ms, bid_px, ask_px, spread, mid)
+              ORDER BY ts_unix_ms DESC
+              LIMIT 1
+            )[OFFSET(0)] AS last_tick,
+            AVG(bid_px) AS tw_bid_px,
+            AVG(ask_px) AS tw_ask_px
+          FROM src
+          GROUP BY symbol, minute_bucket_ms
+        )
+        SELECT
+          symbol,
+          last_tick.ts_unix_ms AS ts_unix_ms,
+          minute_bucket_ms,
+          last_tick.bid_px AS bid_px,
+          last_tick.ask_px AS ask_px,
+          last_tick.spread AS spread,
+          last_tick.mid AS mid,
+          tw_bid_px,
+          tw_ask_px
+        FROM agg
+        ORDER BY symbol, ts_unix_ms
+    """
+    return _run_query_to_df(client=client, sql=sql, params=params)
+
+
+def _query_mark_minute(
+    client: bigquery.Client,
+    table_fqn: str,
+    symbols: Sequence[str],
+    start_date: Optional[date],
+    end_date: Optional[date],
+) -> pd.DataFrame:
+    where_sql, params = _build_where_and_params(symbols=symbols, start_date=start_date, end_date=end_date)
+    sql = f"""
+        WITH src AS (
+          SELECT
+            symbol,
+            ts_unix_ms,
+            mark_px,
+            funding_rate,
+            DIV(ts_unix_ms, 60000) * 60000 AS minute_bucket_ms
+          FROM `{table_fqn}`
+          {where_sql}
+        ),
+        agg AS (
+          SELECT
+            symbol,
+            minute_bucket_ms,
+            ARRAY_AGG(
+              STRUCT(ts_unix_ms, mark_px, funding_rate)
+              ORDER BY ts_unix_ms DESC
+              LIMIT 1
+            )[OFFSET(0)] AS last_tick
+          FROM src
+          GROUP BY symbol, minute_bucket_ms
+        )
+        SELECT
+          symbol,
+          last_tick.ts_unix_ms AS ts_unix_ms,
+          minute_bucket_ms,
+          last_tick.mark_px AS mark_px,
+          last_tick.funding_rate AS funding_rate
+        FROM agg
+        ORDER BY symbol, ts_unix_ms
+    """
+    return _run_query_to_df(client=client, sql=sql, params=params)
 
 
 def _load_inputs_bigquery(
@@ -96,40 +241,25 @@ def _load_inputs_bigquery(
     start_date: Optional[date],
     end_date: Optional[date],
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    kline_cols = [
-        "symbol",
-        "ts_unix_ms",
-        "k1_close_ms",
-        "k1_open",
-        "k1_high",
-        "k1_low",
-        "k1_close",
-        "k1_base_vol",
-        "k1_closed",
-    ]
-    book_cols = ["symbol", "ts_unix_ms", "bid_px", "ask_px", "spread", "mid"]
-    mark_cols = ["symbol", "ts_unix_ms", "mark_px", "funding_rate"]
-
-    kline = _query_table(
+    # Query minute-grain rows directly from BigQuery to avoid loading massive
+    # second-level raw tables into local memory.
+    kline = _query_kline_minute(
         client=client,
         table_fqn=f"{project}.{dataset}.{KLINE_TABLE}",
-        columns=kline_cols,
         symbols=symbols,
         start_date=start_date,
         end_date=end_date,
     )
-    book = _query_table(
+    book = _query_book_minute(
         client=client,
         table_fqn=f"{project}.{dataset}.{BOOK_TABLE}",
-        columns=book_cols,
         symbols=symbols,
         start_date=start_date,
         end_date=end_date,
     )
-    mark = _query_table(
+    mark = _query_mark_minute(
         client=client,
         table_fqn=f"{project}.{dataset}.{MARK_TABLE}",
-        columns=mark_cols,
         symbols=symbols,
         start_date=start_date,
         end_date=end_date,
@@ -150,11 +280,16 @@ def _prepare_kline(kline: pd.DataFrame) -> pd.DataFrame:
     ]
     for c in num_cols:
         kline[c] = pd.to_numeric(kline[c], errors="coerce")
+    if "minute_bucket_ms" in kline.columns:
+        kline["minute_bucket_ms"] = pd.to_numeric(kline["minute_bucket_ms"], errors="coerce")
     kline["k1_closed"] = kline["k1_closed"].astype(str).str.lower().isin(["true", "1"])
     kline = kline.dropna(subset=["symbol", "ts_unix_ms", "k1_open", "k1_high", "k1_low", "k1_close", "k1_base_vol"])
 
     # Keep the latest snapshot per minute for backtest completeness.
-    kline["minute_bucket_ms"] = (kline["ts_unix_ms"] // 60000) * 60000
+    if "minute_bucket_ms" not in kline.columns:
+        kline["minute_bucket_ms"] = (kline["ts_unix_ms"] // 60000) * 60000
+    else:
+        kline["minute_bucket_ms"] = kline["minute_bucket_ms"].fillna((kline["ts_unix_ms"] // 60000) * 60000)
     kline = kline.sort_values(["symbol", "minute_bucket_ms", "ts_unix_ms"])
     kline = kline.drop_duplicates(subset=["symbol", "minute_bucket_ms"], keep="last")
 
@@ -166,8 +301,11 @@ def _prepare_kline(kline: pd.DataFrame) -> pd.DataFrame:
 
 def _prepare_book(book: pd.DataFrame) -> pd.DataFrame:
     book = book.copy()
-    for c in ["ts_unix_ms", "bid_px", "ask_px", "spread", "mid"]:
-        book[c] = pd.to_numeric(book[c], errors="coerce")
+    for c in ["ts_unix_ms", "bid_px", "ask_px", "spread", "mid", "minute_bucket_ms", "tw_bid_px", "tw_ask_px"]:
+        if c in book.columns:
+            book[c] = pd.to_numeric(book[c], errors="coerce")
+    if "minute_bucket_ms" not in book.columns:
+        book["minute_bucket_ms"] = (book["ts_unix_ms"] // 60000) * 60000
     return book.dropna(subset=["symbol", "ts_unix_ms"]).sort_values(["symbol", "ts_unix_ms"])
 
 
@@ -190,8 +328,11 @@ def _compute_tw_book_1m(book_sym: pd.DataFrame) -> pd.DataFrame:
 
 def _prepare_mark(mark: pd.DataFrame) -> pd.DataFrame:
     mark = mark.copy()
-    for c in ["ts_unix_ms", "mark_px", "funding_rate"]:
-        mark[c] = pd.to_numeric(mark[c], errors="coerce")
+    for c in ["ts_unix_ms", "mark_px", "funding_rate", "minute_bucket_ms"]:
+        if c in mark.columns:
+            mark[c] = pd.to_numeric(mark[c], errors="coerce")
+    if "minute_bucket_ms" not in mark.columns:
+        mark["minute_bucket_ms"] = (mark["ts_unix_ms"] // 60000) * 60000
     return mark.dropna(subset=["symbol", "ts_unix_ms"]).sort_values(["symbol", "ts_unix_ms"])
 
 
@@ -227,12 +368,22 @@ def _merge_symbol(sym: str, kline_sym: pd.DataFrame, book_sym: pd.DataFrame, mar
         base["mark_px"] = np.nan
         base["funding_rate"] = np.nan
 
-    tw_book = _compute_tw_book_1m(book_sym)
-    if not tw_book.empty:
+    has_precomputed_tw = {"minute_bucket_ms", "tw_bid_px", "tw_ask_px"}.issubset(book_sym.columns)
+    if has_precomputed_tw:
+        tw_book = (
+            book_sym[["minute_bucket_ms", "tw_bid_px", "tw_ask_px"]]
+            .dropna(subset=["minute_bucket_ms"])
+            .sort_values("minute_bucket_ms")
+            .drop_duplicates(subset=["minute_bucket_ms"], keep="last")
+        )
         base = base.merge(tw_book, on="minute_bucket_ms", how="left")
     else:
-        base["tw_bid_px"] = np.nan
-        base["tw_ask_px"] = np.nan
+        tw_book = _compute_tw_book_1m(book_sym)
+        if not tw_book.empty:
+            base = base.merge(tw_book, on="minute_bucket_ms", how="left")
+        else:
+            base["tw_bid_px"] = np.nan
+            base["tw_ask_px"] = np.nan
 
     base["symbol"] = sym
     return base
