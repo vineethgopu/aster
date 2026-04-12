@@ -52,12 +52,12 @@ START_DATE="$QUERY_START_DATE"
 END_DATE="$QUERY_END_DATE"
 # Default weekly backtest window (UTC):
 # - end_date: yesterday (typically Saturday when timer runs Sunday 00:20 UTC)
-# - start_date: 28 days before today (typically Sunday 4 weeks prior)
+# - start_date: 50 days before today
 if [[ -z "$END_DATE" ]]; then
   END_DATE="$(date -u -d '1 day ago' +%F)"
 fi
 if [[ -z "$START_DATE" ]]; then
-  START_DATE="$(date -u -d '28 days ago' +%F)"
+  START_DATE="$(date -u -d '50 days ago' +%F)"
 fi
 WINDOWS="$QUERY_WINDOWS"
 

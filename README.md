@@ -716,7 +716,7 @@ This schedules a weekly backtest run at `Sun 00:20 UTC`:
 Defaults in `run_backtest.sh`:
 - if `ASTER_BACKTEST_START_DATE`/`ASTER_BACKTEST_END_DATE` are empty:
   - `end_date = UTC yesterday` (Saturday for the scheduled Sunday run)
-  - `start_date = UTC 28 days ago` (Sunday, 4 weeks before `end_date`)
+  - `start_date = UTC 50 days ago`
 - `ASTER_BACKTEST_CHUNK_SIZE=1000` limits configs processed per symbol chunk
 - symbols are sourced from `ASTER_BACKTEST_QUERY_SYMBOLS` or config symbol keys
 - `ASTER_BQ_ENABLE_BACKTEST_UPLOAD=true` enables delete+insert upload of run-date backtest tables
