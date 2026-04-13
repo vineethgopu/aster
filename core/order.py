@@ -123,6 +123,7 @@ class OrderPlacer:
         self.poll_interval_s = poll_interval_s
         self.log = logger or logging.getLogger(__name__)
         self._symbol_filters: Dict[str, Dict[str, float]] = {}
+        self._warned_deprecated_exit_detect = False
 
     def _load_exchange_filters(self) -> None:
         if self._symbol_filters:
@@ -591,7 +592,24 @@ class OrderPlacer:
 
         pos_to_close = pos
         if refresh_from_exchange:
-            live_amt = self.get_position_amt(pos.symbol)
+            live_amt = None
+            # Prefer WS-first account state from client when available; REST remains fallback.
+            if hasattr(price_source, "get_position_amt"):
+                try:
+                    live_amt = price_source.get_position_amt(
+                        pos.symbol,
+                        prefer_ws=True,
+                        fallback_rest=True,
+                    )
+                except TypeError:
+                    try:
+                        live_amt = price_source.get_position_amt(pos.symbol)
+                    except Exception:
+                        live_amt = None
+                except Exception:
+                    live_amt = None
+            if live_amt is None:
+                live_amt = self.get_position_amt(pos.symbol)
             if live_amt is not None and abs(live_amt) > 0:
                 # Derive side from exchange sign to avoid accidental wrong-way closes.
                 live_side = "BUY" if live_amt > 0 else "SELL"
@@ -858,8 +876,13 @@ class OrderPlacer:
 
     def detect_filled_exit_order(self, pos: PositionState) -> Dict[str, Any]:
         """
-        Detect which armed exit trigger filled first (TP/SL/TSL) from order state.
+        DEPRECATED:
+          Use `AsterClient.detect_filled_exit_from_ws(...)` as the primary path.
+          This REST polling fallback remains for compatibility/guardrail usage.
         """
+        if not self._warned_deprecated_exit_detect:
+            self._warned_deprecated_exit_detect = True
+            self.log.info("[DEPRECATED] detect_filled_exit_order() fallback called; prefer WS order stream state.")
         checks = [
             ("TP", pos.take_profit_order_id),
             ("SL", pos.stop_loss_order_id),
@@ -915,7 +938,10 @@ class OrderPlacer:
         }
 
     def get_position_amt(self, symbol: str) -> Optional[float]:
-        """Signed position amount (long > 0, short < 0)."""
+        """
+        REST fallback for signed position amount (long > 0, short < 0).
+        Prefer WS-driven account state from `AsterClient.get_position_amt(...)`.
+        """
         try:
             resp = self.rest.get_position_risk(symbol=symbol, recvWindow=max(self.recv_window_ms, 6000))
         except ClientError as e:

@@ -595,7 +595,19 @@ if __name__ == "__main__":
     for sym in symbols:
         print(f"[CONFIG_CURRENT] {sym} {symbol_params[sym]}")
 
-    client = AsterClient(symbols=symbols, log_dir=args.log_dir, delete_logs=args.delete_logs)
+    order_api_key: Optional[str] = None
+    order_api_secret: Optional[str] = None
+    if args.enable_trading:
+        order_api_key = _read_secret(os.getenv("ORDER_API_KEY"))
+        order_api_secret = _read_secret(os.getenv("ORDER_SECRET_KEY"))
+
+    client = AsterClient(
+        symbols=symbols,
+        log_dir=args.log_dir,
+        delete_logs=args.delete_logs,
+        rest_key=order_api_key,
+        rest_secret=order_api_secret,
+    )
     tick_size_by_symbol = _load_tick_size_by_symbol(client.rest, symbols)
     if tick_size_by_symbol:
         print(f"[TICK_SIZE] {tick_size_by_symbol}")
@@ -620,9 +632,7 @@ if __name__ == "__main__":
 
     order_placer = None
     if args.enable_trading:
-        api_key = _read_secret(os.getenv("ORDER_API_KEY"))
-        api_secret = _read_secret(os.getenv("ORDER_SECRET_KEY"))
-        order_placer = OrderPlacer(api_key=api_key, api_secret=api_secret)
+        order_placer = OrderPlacer(api_key=str(order_api_key), api_secret=str(order_api_secret))
         risk_setup = order_placer.ensure_risk_setup(
             symbols=symbols,
             leverage=args.target_leverage,
@@ -638,11 +648,16 @@ if __name__ == "__main__":
     client.ws.start()
     streams = client._build_combined_streams()
     client.ws.live_subscribe(streams, id=1, callback=client._on_ws_message)
+    if order_placer is not None:
+        user_stream_ok = client.start_user_stream()
+        print(f"[USER_STREAM] start_ok={user_stream_ok} status={client.get_user_stream_status()}")
 
     positions: Dict[str, PositionState] = {}
     trade_trackers: Dict[str, Dict[str, Any]] = {}
+    pending_entries: Dict[str, Dict[str, Any]] = {}
     cooldown_until_ms: Dict[str, int] = {}
     last_force_exit_attempt_ms: Dict[str, int] = {}
+    last_user_stream_warn_ms = 0
     daily_balance_day: Optional[str] = None
     daily_start_balance: Optional[float] = None
     daily_peak_balance: Optional[float] = None
@@ -659,6 +674,12 @@ if __name__ == "__main__":
             ts_ms = _now_ms()
             utc_minute, utc_dt = _utc_minute_of_day(ts_ms)
             if order_placer is not None:
+                client.poll_user_stream_maintenance(now_ms=ts_ms)
+                user_status = client.get_user_stream_status(now_ms=ts_ms)
+                if (not user_status.get("healthy")) and (ts_ms - last_user_stream_warn_ms >= 15_000):
+                    last_user_stream_warn_ms = ts_ms
+                    print(f"[USER_STREAM_WARN] unhealthy status={user_status}")
+
                 utc_day = utc_dt.date().isoformat()
                 if utc_day != daily_balance_day:
                     daily_balance_day = utc_day
@@ -671,7 +692,7 @@ if __name__ == "__main__":
                     effective_order_notional = args.order_notional
                     print(f"[RISK_DAY_RESET] utc_day={utc_day}")
 
-                balance_now = order_placer.get_total_margin_balance()
+                balance_now = client.get_total_margin_balance(prefer_ws=True, fallback_rest=True)
                 if balance_now is not None and balance_now > 0:
                     daily_last_balance = balance_now
                     daily_balance_missing_warned = False
@@ -707,16 +728,11 @@ if __name__ == "__main__":
                     daily_balance_missing_warned = True
                     print("[RISK_WARN] could not read totalMarginBalance; daily drawdown blocker/default notional unavailable until balance is available.")
 
-            with client._lock:
-                symbol_rows = {}
-                for sym in symbols:
-                    symbol_rows[sym] = {
-                        "bars": client.getBars(sym),
-                        "bbo": client.getBBO(sym),
-                        "funding": client.getFundingInfo(sym),
-                        "trades_1s": client.getTrades(sym, lookback_seconds=1),
-                        "l2": client.getL2(sym),
-                    }
+            symbol_rows = client.get_symbol_rows(
+                lookback_seconds=1,
+                include_user_state=(order_placer is not None),
+                fallback_rest_for_user_state=(order_placer is not None),
+            )
 
             if args.update_logs:
                 client.logger.write_second(ts_ms, symbol_rows)
@@ -749,6 +765,71 @@ if __name__ == "__main__":
                 if order_placer is None:
                     continue
 
+                account_state = snap.get("account") or {}
+                ws_pos_amt = _safe_float(account_state.get("position_amt"))
+                ws_pos_qty = abs(float(ws_pos_amt)) if ws_pos_amt is not None else None
+                ws_has_position = bool(ws_pos_qty is not None and ws_pos_qty > 0)
+                ws_pos_side = "BUY" if (ws_pos_amt is not None and ws_pos_amt > 0) else ("SELL" if (ws_pos_amt is not None and ws_pos_amt < 0) else None)
+
+                pending = pending_entries.get(sym)
+                if pending is not None and positions.get(sym) is None:
+                    pending_order_id = pending.get("entry_order_id")
+                    pending_update = client.get_order_update(pending_order_id)
+                    pending_cum_qty = _safe_float((pending_update or {}).get("cum_filled_qty"))
+                    pending_avg_px = _safe_float((pending_update or {}).get("avg_price"))
+                    if ws_has_position or (pending_cum_qty is not None and pending_cum_qty > 0):
+                        recovered_qty = ws_pos_qty if ws_has_position and ws_pos_qty is not None else float(pending_cum_qty or 0.0)
+                        recovered_side = ws_pos_side or str(pending.get("side") or "")
+                        recovered_px = pending_avg_px or _safe_float(pending.get("entry_price_hint")) or 0.0
+                        if recovered_qty > 0 and recovered_px > 0 and recovered_side in {"BUY", "SELL"}:
+                            recovered_pos = PositionState(
+                                symbol=sym,
+                                side=recovered_side,
+                                qty=float(recovered_qty),
+                                entry_vwap_px=float(recovered_px),
+                                opened_time_ms=ts_ms,
+                                taker_order_id=pending_order_id,
+                            )
+                            try:
+                                trigger_resp = order_placer.place_exit_triggers(
+                                    pos=recovered_pos,
+                                    take_profit_bps=float(pending.get("tp_bps") or 0.0),
+                                    stop_loss_bps=float(pending.get("sl_bps") or 0.0),
+                                    trailing_activation_bps=float(pending.get("activation_bps") or 0.0),
+                                    trailing_callback_rate=float(pending.get("trailing_callback_rate") or 0.0),
+                                )
+                                recovered_pos.take_profit_order_id = trigger_resp.get("take_profit_order_id")
+                                recovered_pos.stop_loss_order_id = trigger_resp.get("stop_loss_order_id")
+                                recovered_pos.trailing_stop_order_id = trigger_resp.get("trailing_stop_order_id")
+                            except Exception as e:
+                                print(f"[ENTRY_RECOVERY_WARN] {sym} failed to arm exits on recovered position: {e}")
+
+                            positions[sym] = recovered_pos
+                            mark_px_now = _safe_float((snap.get("funding") or {}).get("mark_px"))
+                            rec_fill_time_val = _safe_float((pending_update or {}).get("event_time_ms")) or ts_ms
+                            trade_trackers[sym] = {
+                                "entry_order_id": recovered_pos.taker_order_id,
+                                "entry_send_time_ms": int(pending.get("entry_send_time_ms") or ts_ms),
+                                "entry_fill_time_ms": int(rec_fill_time_val),
+                                "entry_fill_price": recovered_pos.entry_vwap_px,
+                                "fill_quantity": recovered_pos.qty,
+                                "entry_mark_price": mark_px_now,
+                                "exit_mark_price": mark_px_now,
+                                "order_lifetime_market_volume_quantity": 0.0,
+                                "order_lifetime_market_volume_notional": 0.0,
+                                "order_lifetime_open": None,
+                                "order_lifetime_high": None,
+                                "order_lifetime_low": None,
+                                "order_lifetime_close": None,
+                                "seen_trade_ids": set(),
+                                "seen_exit_order_ids": set(),
+                            }
+                            pending_entries.pop(sym, None)
+                            print(f"[ENTRY_RECOVERED_WS] {sym} position={recovered_pos}")
+                    elif ts_ms - int(pending.get("entry_send_time_ms") or ts_ms) >= 120_000 and not ws_has_position:
+                        pending_entries.pop(sym, None)
+                        print(f"[ENTRY_PENDING_EXPIRED] {sym} order_id={pending_order_id} no fill/position observed.")
+
                 pos = positions.get(sym)
                 if pos is not None:
                     tracker = trade_trackers.get(sym)
@@ -756,9 +837,14 @@ if __name__ == "__main__":
                         _update_trade_tracker(tracker, snap)
                         tracker.setdefault("seen_exit_order_ids", set())
 
-                    # Continuously monitor armed exit triggers (TP/SL/TSL) so we can
-                    # capture lifecycle logs immediately when the exchange reports fill.
-                    detect = order_placer.detect_filled_exit_order(pos)
+                    detect = client.detect_filled_exit_from_ws(
+                        symbol=sym,
+                        order_ids_by_reason={
+                            "TP": pos.take_profit_order_id,
+                            "SL": pos.stop_loss_order_id,
+                            "TSL": pos.trailing_stop_order_id,
+                        },
+                    )
                     detected_order_id = detect.get("order_id")
                     detected_filled_qty = float(detect.get("filled_qty") or 0.0)
                     if detected_order_id is not None and detected_filled_qty > 0:
@@ -771,14 +857,13 @@ if __name__ == "__main__":
                                 else:
                                     seen_exit_ids.add(detected_order_id)
                         if not already_seen:
-                            live_qty_after_trigger = order_placer.get_position_abs_qty(sym)
                             print(
                                 (
-                                    f"[EXIT_TRIGGER_FILL] {sym} detected_exit={detect} "
-                                    f"live_qty_after_trigger={live_qty_after_trigger}"
+                                    f"[EXIT_TRIGGER_FILL_WS] {sym} detected_exit={detect} "
+                                    f"ws_position_qty={ws_pos_qty}"
                                 )
                             )
-                            if live_qty_after_trigger is None or live_qty_after_trigger <= 0:
+                            if not ws_has_position:
                                 if tracker is not None:
                                     _finalize_trade(
                                         symbol=sym,
@@ -798,13 +883,8 @@ if __name__ == "__main__":
                                 trade_trackers.pop(sym, None)
                                 cooldown_until_ms[sym] = ts_ms + args.reentry_cooldown_min * 60_000
                                 continue
-
-                            # Defensive: if exchange reports trigger fill but still has
-                            # residual position (rare), keep tracking with refreshed qty.
-                            try:
-                                pos.qty = float(live_qty_after_trigger)
-                            except Exception:
-                                pass
+                            if ws_pos_qty is not None and ws_pos_qty > 0:
+                                pos.qty = float(ws_pos_qty)
 
                     if daily_drawdown_blocked:
                         last_attempt = last_force_exit_attempt_ms.get(sym, 0)
@@ -873,10 +953,8 @@ if __name__ == "__main__":
                                 cooldown_until_ms[sym] = ts_ms + args.reentry_cooldown_min * 60_000
                         continue
 
-                    live_qty = order_placer.get_position_abs_qty(sym)
-                    if live_qty is not None and live_qty <= 0:
-                        detect = order_placer.detect_filled_exit_order(pos)
-                        print(f"[POSITION] {sym} appears closed on exchange. detected_exit={detect}")
+                    if not ws_has_position:
+                        print(f"[POSITION] {sym} appears closed on exchange via WS. detected_exit={detect}")
                         if tracker is not None:
                             _finalize_trade(
                                 symbol=sym,
@@ -929,15 +1007,14 @@ if __name__ == "__main__":
                     continue
 
                 if daily_drawdown_blocked:
-                    live_amt = order_placer.get_position_amt(sym)
-                    if live_amt is not None and abs(live_amt) > 0:
+                    if ws_has_position and ws_pos_side is not None:
                         last_attempt = last_force_exit_attempt_ms.get(sym, 0)
                         if ts_ms - last_attempt >= 10_000:
                             last_force_exit_attempt_ms[sym] = ts_ms
                             temp_pos = PositionState(
                                 symbol=sym,
-                                side=("BUY" if live_amt > 0 else "SELL"),
-                                qty=abs(live_amt),
+                                side=ws_pos_side,
+                                qty=float(ws_pos_qty or 0.0),
                                 entry_vwap_px=0.0,
                                 opened_time_ms=ts_ms,
                             )
@@ -964,15 +1041,14 @@ if __name__ == "__main__":
                     continue
 
                 if utc_minute >= force_exit_min:
-                    live_amt = order_placer.get_position_amt(sym)
-                    if live_amt is not None and abs(live_amt) > 0:
+                    if ws_has_position and ws_pos_side is not None:
                         last_attempt = last_force_exit_attempt_ms.get(sym, 0)
                         if ts_ms - last_attempt >= 10_000:
                             last_force_exit_attempt_ms[sym] = ts_ms
                             temp_pos = PositionState(
                                 symbol=sym,
-                                side=("BUY" if live_amt > 0 else "SELL"),
-                                qty=abs(live_amt),
+                                side=ws_pos_side,
+                                qty=float(ws_pos_qty or 0.0),
                                 entry_vwap_px=0.0,
                                 opened_time_ms=ts_ms,
                             )
@@ -999,9 +1075,8 @@ if __name__ == "__main__":
                     print(f"[ENTRY_BLOCKED] {sym} cooldown active, remaining={remaining_s}s")
                     continue
 
-                live_qty = order_placer.get_position_abs_qty(sym)
-                if live_qty is not None and live_qty > 0:
-                    print(f"[ENTRY_BLOCKED] {sym} exchange position still open qty={live_qty}")
+                if ws_has_position:
+                    print(f"[ENTRY_BLOCKED] {sym} exchange position still open qty={ws_pos_qty} source={account_state.get('source')}")
                     continue
 
                 if effective_order_notional is None or effective_order_notional <= 0:
@@ -1083,6 +1158,20 @@ if __name__ == "__main__":
                             f"order_notional={effective_order_notional:.6f}"
                         )
                     )
+                else:
+                    pending_order_id = entry_res.taker_order_id
+                    if pending_order_id is not None:
+                        pending_entries[sym] = {
+                            "entry_order_id": pending_order_id,
+                            "entry_send_time_ms": entry_send_ms,
+                            "entry_price_hint": entry_limit_price,
+                            "side": side,
+                            "tp_bps": tp_bps,
+                            "sl_bps": sl_bps,
+                            "activation_bps": activation_bps,
+                            "trailing_callback_rate": trailing_callback_rate,
+                        }
+                        print(f"[ENTRY_PENDING] {sym} order_id={pending_order_id} awaiting WS fill/position update.")
 
             client.n_poll_snapshots += 1
             time.sleep(client.poll_seconds)
