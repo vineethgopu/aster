@@ -142,6 +142,7 @@ def _load_tick_size_by_symbol(rest_client: Any, symbols: list[str]) -> Dict[str,
 _SYMBOL_PARAM_KEYS = {
     "k",
     "T",
+    "enable_trading",
     "n",
     "V",
     "tp_bps",
@@ -154,13 +155,15 @@ _SYMBOL_PARAM_KEYS = {
     "funding_max",
 }
 _SYMBOL_PARAM_INT_KEYS = {"T", "V"}
-_SYMBOL_PARAM_FLOAT_KEYS = _SYMBOL_PARAM_KEYS - _SYMBOL_PARAM_INT_KEYS
+_SYMBOL_PARAM_BOOL_KEYS = {"enable_trading"}
+_SYMBOL_PARAM_FLOAT_KEYS = _SYMBOL_PARAM_KEYS - _SYMBOL_PARAM_INT_KEYS - _SYMBOL_PARAM_BOOL_KEYS
 
 
 def _default_symbol_params_from_args(args: argparse.Namespace) -> Dict[str, Any]:
     return {
         "k": float(args.k),
         "T": int(args.T),
+        "enable_trading": bool(args.enable_trading),
         "n": float(args.n),
         "V": int(args.V),
         "tp_bps": float(args.take_profit_bps),
@@ -174,9 +177,24 @@ def _default_symbol_params_from_args(args: argparse.Namespace) -> Dict[str, Any]
     }
 
 
+def _cast_bool_value(key: str, value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    s = str(value).strip().lower()
+    if s in {"true", "1", "yes", "y"}:
+        return True
+    if s in {"false", "0", "no", "n"}:
+        return False
+    raise ValueError(f"{key} must be a boolean-like value, got: {value!r}")
+
+
 def _cast_symbol_param_value(key: str, value: Any) -> Any:
     if key in _SYMBOL_PARAM_INT_KEYS:
         return int(value)
+    if key in _SYMBOL_PARAM_BOOL_KEYS:
+        return _cast_bool_value(key, value)
     if key in _SYMBOL_PARAM_FLOAT_KEYS:
         return float(value)
     return value
@@ -187,6 +205,8 @@ def _validate_symbol_params(symbol: str, p: Dict[str, Any]) -> None:
         raise ValueError(f"{symbol}: k must be > 0")
     if p["T"] <= 0:
         raise ValueError(f"{symbol}: T must be > 0")
+    if not isinstance(p["enable_trading"], bool):
+        raise ValueError(f"{symbol}: enable_trading must be boolean")
     if p["n"] <= 0:
         raise ValueError(f"{symbol}: n must be > 0")
     if p["V"] <= 0:
@@ -233,10 +253,11 @@ def _load_symbol_runtime_config(
     #   "BTCUSDT": {...all required keys...},
     #   "ETHUSDT": {...all required keys...}
     # }
+    ignored_symbols: list[str] = []
     for raw_sym, patch in raw.items():
         sym = str(raw_sym).strip().upper()
         if sym not in out:
-            print(f"[WARN] {p}: symbol {sym} is not in runtime --symbols; ignoring.")
+            ignored_symbols.append(sym)
             continue
         if not isinstance(patch, dict):
             raise ValueError(f"{p}: {sym} must be an object")
@@ -249,6 +270,9 @@ def _load_symbol_runtime_config(
                 raise ValueError(f"{p}: unsupported key for {sym}: {k}")
             sym_cfg[k] = _cast_symbol_param_value(k, v)
         out[sym] = sym_cfg
+
+    if ignored_symbols:
+        print(f"[CONFIG_CURRENT] ignoring non-runtime symbols: {sorted(ignored_symbols)}")
 
     for sym in symbols:
         if sym not in raw:
@@ -588,12 +612,14 @@ if __name__ == "__main__":
         symbols=symbols,
         defaults=_default_symbol_params_from_args(args),
     )
+    trade_enabled_symbols = [sym for sym in symbols if bool(symbol_params[sym].get("enable_trading", True))]
     print(
         "[CONFIG_CURRENT] "
         + ("loaded " + args.config_current_file if args.config_current_file else "using CLI/env defaults")
     )
     for sym in symbols:
         print(f"[CONFIG_CURRENT] {sym} {symbol_params[sym]}")
+    print(f"[CONFIG_CURRENT] trade_enabled_symbols={trade_enabled_symbols}")
 
     order_api_key: Optional[str] = None
     order_api_secret: Optional[str] = None
@@ -633,12 +659,15 @@ if __name__ == "__main__":
     order_placer = None
     if args.enable_trading:
         order_placer = OrderPlacer(api_key=str(order_api_key), api_secret=str(order_api_secret))
-        risk_setup = order_placer.ensure_risk_setup(
-            symbols=symbols,
-            leverage=args.target_leverage,
-            margin_type="ISOLATED",
-        )
-        print(f"[RISK_SETUP] {risk_setup}")
+        if trade_enabled_symbols:
+            risk_setup = order_placer.ensure_risk_setup(
+                symbols=trade_enabled_symbols,
+                leverage=args.target_leverage,
+                margin_type="ISOLATED",
+            )
+            print(f"[RISK_SETUP] {risk_setup}")
+        else:
+            print("[RISK_SETUP] skipped; no symbols are trade-enabled in config_current")
         print("Live trading: ENABLED")
     else:
         print("Live trading: DISABLED")
@@ -1064,6 +1093,10 @@ if __name__ == "__main__":
                         continue
 
                 if not decision or not decision.get("enter"):
+                    continue
+
+                if not bool(sym_cfg.get("enable_trading", True)):
+                    print(f"[ENTRY_BLOCKED] {sym} trading disabled in config_current")
                     continue
 
                 if utc_minute >= entry_halt_min:
