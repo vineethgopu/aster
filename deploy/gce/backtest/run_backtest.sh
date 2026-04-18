@@ -24,6 +24,7 @@ BQ_LOCATION="${ASTER_BQ_LOCATION:-}"
 QUERY_SYMBOLS="${ASTER_BACKTEST_QUERY_SYMBOLS:-}"
 QUERY_START_DATE="${ASTER_BACKTEST_START_DATE:-}"
 QUERY_END_DATE="${ASTER_BACKTEST_END_DATE:-}"
+LOOKBACK_DAYS="${ASTER_BACKTEST_LOOKBACK_DAYS:-28}"
 QUERY_WINDOWS="${ASTER_BACKTEST_FEATURE_WINDOWS:-10,30,60}"
 UPLOAD_BQ_BACKTEST_RESULTS="${ASTER_BQ_ENABLE_BACKTEST_UPLOAD:-true}"
 EMAIL_ON_COMPLETION="${ASTER_EMAIL_BACKTEST_ON_COMPLETION:-true}"
@@ -52,12 +53,17 @@ START_DATE="$QUERY_START_DATE"
 END_DATE="$QUERY_END_DATE"
 # Default weekly backtest window (UTC):
 # - end_date: yesterday (typically Saturday when timer runs Sunday 00:20 UTC)
-# - start_date: 50 days before today
+# - start_date: ASTER_BACKTEST_LOOKBACK_DAYS before today (default: 28)
 if [[ -z "$END_DATE" ]]; then
   END_DATE="$(date -u -d '1 day ago' +%F)"
 fi
 if [[ -z "$START_DATE" ]]; then
-  START_DATE="$(date -u -d '50 days ago' +%F)"
+  if [[ "$LOOKBACK_DAYS" =~ ^[0-9]+$ ]] && [[ "$LOOKBACK_DAYS" -gt 0 ]]; then
+    START_DATE="$(date -u -d "${LOOKBACK_DAYS} days ago" +%F)"
+  else
+    echo "[BACKTEST] invalid ASTER_BACKTEST_LOOKBACK_DAYS=${LOOKBACK_DAYS}; defaulting to 28."
+    START_DATE="$(date -u -d '28 days ago' +%F)"
+  fi
 fi
 WINDOWS="$QUERY_WINDOWS"
 
