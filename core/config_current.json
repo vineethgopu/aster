@@ -73,5 +73,35 @@
     "min_tp_gap_bps": 4.0,
     "spread_max": 0.2,
     "funding_max": 0.5
+  },
+  "AAVEUSDT": {
+    "k": 3.0,
+    "T": 60,
+    "enable_trading": false,
+    "n": 2.0,
+    "V": 60,
+    "tp_bps": 350.0,
+    "sl_bps": 50.0,
+    "activation_bps": 150.0,
+    "activation_buffer_bps": 0.5,
+    "callback_bps": 10.0,
+    "min_tp_gap_bps": 4.0,
+    "spread_max": 0.2,
+    "funding_max": 0.5
+  },
+  "HYPEUSDT": {
+    "k": 3.0,
+    "T": 60,
+    "enable_trading": false,
+    "n": 2.0,
+    "V": 60,
+    "tp_bps": 350.0,
+    "sl_bps": 50.0,
+    "activation_bps": 150.0,
+    "activation_buffer_bps": 0.5,
+    "callback_bps": 10.0,
+    "min_tp_gap_bps": 4.0,
+    "spread_max": 0.2,
+    "funding_max": 0.5
   }
 }

@@ -268,6 +268,112 @@
           0.5
         ]
       }
+    },
+    "AAVEUSDT": {
+      "params": {
+        "k": [
+          2,
+          2.5,
+          3,
+          3.5,
+          4
+        ],
+        "T": [
+          30,
+          60
+        ],
+        "n": [
+          1.5,
+          2,
+          2.5,
+          3
+        ],
+        "V": [
+          30,
+          60
+        ],
+        "tp_bps": [
+          200,
+          250,
+          300
+        ],
+        "sl_bps": [
+          25,
+          50,
+          75
+        ],
+        "activation_bps": [
+          50
+        ],
+        "activation_buffer_bps": [
+          0.5
+        ],
+        "callback_bps": [
+          15
+        ],
+        "min_tp_gap_bps": [
+          4
+        ],
+        "spread_max": [
+          0.2
+        ],
+        "funding_max": [
+          0.5
+        ]
+      }
+    },
+    "HYPEUSDT": {
+      "params": {
+        "k": [
+          2,
+          2.5,
+          3,
+          3.5,
+          4
+        ],
+        "T": [
+          30,
+          60
+        ],
+        "n": [
+          1.5,
+          2,
+          2.5,
+          3
+        ],
+        "V": [
+          30,
+          60
+        ],
+        "tp_bps": [
+          200,
+          250,
+          300
+        ],
+        "sl_bps": [
+          25,
+          50,
+          75
+        ],
+        "activation_bps": [
+          50
+        ],
+        "activation_buffer_bps": [
+          0.5
+        ],
+        "callback_bps": [
+          15
+        ],
+        "min_tp_gap_bps": [
+          4
+        ],
+        "spread_max": [
+          0.2
+        ],
+        "funding_max": [
+          0.5
+        ]
+      }
     }
   }
 }
