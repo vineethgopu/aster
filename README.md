@@ -9,11 +9,24 @@ This repository contains:
 ```text
 .
 ├── core/
-│   ├── client.py
-│   ├── logs.py
 │   ├── main.py
-│   ├── order.py
-│   └── strategy.py
+│   ├── config_current.json
+│   ├── exchange/
+│   │   ├── client.py
+│   │   ├── client_types.py
+│   │   ├── market_data.py
+│   │   └── order_tracking.py
+│   ├── execution/
+│   │   └── order.py
+│   ├── runtime/
+│   │   ├── config.py
+│   │   ├── lifecycle.py
+│   │   ├── loop.py
+│   │   └── utils.py
+│   ├── signals/
+│   │   └── strategy.py
+│   └── support/
+│       └── logs.py
 ├── logs/
 │   ├── kline_YYYYMMDD.csv
 │   ├── bookTicker_YYYYMMDD.csv
@@ -52,17 +65,34 @@ This repository contains:
 │           ├── aster-backtest.service
 │           ├── aster-backtest.timer
 │           └── run_backtest.sh
+├── validation/
+│   ├── fetch_case_data.py
+│   ├── replay_strategy_case.py
+│   └── cases/
+│       └── xrp_20260416/
+│           ├── case_manifest.json
+│           ├── configs/
+│           └── inputs/
 ├── requirements.txt
 └── .vscode/launch.json
 ```
 
-## Core Modules
+Legacy top-level modules under `core/` such as `client.py`, `order.py`, `strategy.py`, `logs.py`, `runtime_*.py`, and `trade_lifecycle.py` remain as compatibility shims that re-export the implementation packages below.
 
-### `core/client.py`
+## Core Packages
+
+### `core/exchange/`
 Purpose:
 - Connects to Aster REST + WebSocket
 - Seeds initial caches via REST snapshot
 - Maintains live in-memory market caches per symbol
+- Tracks private listen-key order and position state
+
+Key files:
+- `core/exchange/client.py`: `AsterClient` wiring, REST/bootstrap, WS lifecycle
+- `core/exchange/market_data.py`: public stream parsing, caches, and per-symbol snapshots
+- `core/exchange/order_tracking.py`: private user-stream state, WS-first reconciliation, event buffers
+- `core/exchange/client_types.py`: shared dataclasses and stream constants
 
 Caches maintained:
 - `latest_kline_1m`
@@ -84,7 +114,7 @@ Data sources:
 Shutdown:
 - Graceful close handling to reduce reconnect/1006 shutdown noise
 
-### `core/logs.py`
+### `core/support/logs.py`
 Purpose:
 - Buffered CSV logging manager for market snapshots
 
@@ -100,7 +130,7 @@ Notes:
 - Writes header once; buffered flush
 - Auto-rolls files by UTC date so each day lands in a separate CSV
 
-### `core/strategy.py`
+### `core/signals/strategy.py`
 Purpose:
 - Pure signal logic from cached market snapshots
 
@@ -119,7 +149,7 @@ Entry signal requires:
 Warm-up behavior:
 - No trade signal until both rolling windows are fully populated (`T` and `V`)
 
-### `core/order.py`
+### `core/execution/order.py`
 Purpose:
 - Order entry/exit wrappers around `aster.rest_api.Client`
 
@@ -163,10 +193,17 @@ Startup account setup helper:
 Cleanup helper:
 - `cancel_sibling_exit_orders(pos)` to cancel remaining TP/SL/trailing when position is flat
 
-### `core/main.py`
+### `core/runtime/` and `core/main.py`
 Purpose:
-- Runtime orchestrator for polling, strategy evaluation, and optional live trading
-- Appends trade lifecycle rows to `logs/orders_YYYYMMDD.csv` on each completed exit
+- Runtime orchestration, config loading, trade lifecycle finalization, and shared helpers
+- `core/main.py` remains the thin live entrypoint used by local runs and GCE
+
+Key files:
+- `core/runtime/config.py`: CLI parsing and `config_current` loading
+- `core/runtime/loop.py`: 1-second live loop, drawdown guard, pending entry recovery, entry/exit orchestration
+- `core/runtime/lifecycle.py`: tracker state, lifecycle row finalization, trade alert email
+- `core/runtime/utils.py`: shared helper functions
+- `core/main.py`: wires config, exchange, execution, signals, and runtime together
 
 Flow:
 1. Parse CLI params
@@ -716,7 +753,7 @@ This schedules a weekly backtest run at `Sun 00:20 UTC`:
 Defaults in `run_backtest.sh`:
 - if `ASTER_BACKTEST_START_DATE`/`ASTER_BACKTEST_END_DATE` are empty:
   - `end_date = UTC yesterday` (Saturday for the scheduled Sunday run)
-  - `start_date = UTC 50 days ago`
+  - `start_date = UTC ASTER_BACKTEST_LOOKBACK_DAYS ago` (default: 28)
 - `ASTER_BACKTEST_CHUNK_SIZE=1000` limits configs processed per symbol chunk
 - symbols are sourced from `ASTER_BACKTEST_QUERY_SYMBOLS` or config symbol keys
 - `ASTER_BQ_ENABLE_BACKTEST_UPLOAD=true` enables delete+insert upload of run-date backtest tables

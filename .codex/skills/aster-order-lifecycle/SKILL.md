@@ -7,7 +7,7 @@ description: Use when changing entry or exit execution, order sizing, fill confi
 
 ## When to use
 
-- Changes in `core/order.py`
+- Changes in `core/execution/order.py`, `core/runtime/loop.py`, or `core/runtime/lifecycle.py`
 - Questions about taker and maker behavior, position state, or close logic
 - Debugging fills, trigger handling, lifecycle rows, or order recovery
 
@@ -33,7 +33,7 @@ description: Use when changing entry or exit execution, order sizing, fill confi
 
 - `_confirm_order_fill()` polls order status briefly and then reconciles against `get_account_trades()`.
 - An entry is not considered dead just because the first order query looks empty.
-- `core/main.py` keeps `pending_entries` so a late user-stream fill or recovered exchange position can still arm exits.
+- `core/runtime/loop.py` keeps `pending_entries` so a late user-stream fill or recovered exchange position can still arm exits.
 - Exit detection prefers private WS order updates; REST polling is a fallback path.
 
 ## Exit model
@@ -59,7 +59,7 @@ description: Use when changing entry or exit execution, order sizing, fill confi
 
 ## Position truth
 
-- Prefer private user-stream updates from `core/client.py`.
+- Prefer private user-stream updates from `core/exchange/client.py`.
 - REST is still needed for:
   - startup seeding
   - stale-stream recovery
@@ -83,5 +83,5 @@ description: Use when changing entry or exit execution, order sizing, fill confi
 ## Change guidance
 
 - Do not break `reduceOnly`, trigger working types, or rounding behavior without a clear exchange-specific reason.
-- If exit semantics change, also inspect `core/main.py`, `README.md`, and backtest assumptions.
+- If exit semantics change, also inspect `core/runtime/loop.py`, `core/runtime/lifecycle.py`, `README.md`, and backtest assumptions.
 - Avoid adding maker logic casually; the current runtime, recovery logic, and analytics assume aggressive entry.

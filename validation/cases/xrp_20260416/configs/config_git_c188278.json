@@ -1,0 +1,72 @@
+{
+  "BTCUSDT": {
+    "k": 2.0,
+    "T": 60,
+    "n": 2.0,
+    "V": 10,
+    "tp_bps": 70.0,
+    "sl_bps": 25.0,
+    "activation_bps": 15.0,
+    "activation_buffer_bps": 0.5,
+    "callback_bps": 6.0,
+    "min_tp_gap_bps": 4.0,
+    "spread_max": 0.2,
+    "funding_max": 1.5
+  },
+  "ETHUSDT": {
+    "k": 2.0,
+    "T": 30,
+    "n": 1.6,
+    "V": 10,
+    "tp_bps": 70.0,
+    "sl_bps": 15.0,
+    "activation_bps": 25.0,
+    "activation_buffer_bps": 0.5,
+    "callback_bps": 2.0,
+    "min_tp_gap_bps": 4.0,
+    "spread_max": 0.2,
+    "funding_max": 1.5
+  },
+  "SOLUSDT": {
+    "k": 2.0,
+    "T": 30,
+    "n": 2.0,
+    "V": 10,
+    "tp_bps": 70.0,
+    "sl_bps": 35.0,
+    "activation_bps": 25.0,
+    "activation_buffer_bps": 0.5,
+    "callback_bps": 6.0,
+    "min_tp_gap_bps": 4.0,
+    "spread_max": 0.2,
+    "funding_max": 1.5
+  },
+  "BNBUSDT": {
+    "k": 1.6,
+    "T": 60,
+    "n": 2.0,
+    "V": 10,
+    "tp_bps": 70.0,
+    "sl_bps": 25.0,
+    "activation_bps": 35.0,
+    "activation_buffer_bps": 0.5,
+    "callback_bps": 6.0,
+    "min_tp_gap_bps": 4.0,
+    "spread_max": 0.2,
+    "funding_max": 1.5
+  },
+  "XRPUSDT": {
+    "k": 12.0,
+    "T": 30,
+    "n": 2.0,
+    "V": 10,
+    "tp_bps": 70.0,
+    "sl_bps": 25.0,
+    "activation_bps": 35.0,
+    "activation_buffer_bps": 0.5,
+    "callback_bps": 6.0,
+    "min_tp_gap_bps": 4.0,
+    "spread_max": 0.2,
+    "funding_max": 1.5
+  }
+}

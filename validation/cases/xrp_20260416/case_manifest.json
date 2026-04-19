@@ -1,0 +1,30 @@
+{
+  "case_id": "xrp_20260416",
+  "symbol": "XRPUSDT",
+  "window": {
+    "start_ms": 1776346200000,
+    "end_ms": 1776369600000,
+    "start_utc": "2026-04-16 13:30:00 UTC",
+    "end_utc": "2026-04-16 20:00:00 UTC"
+  },
+  "objective": "Reproduce the April 16 XRP entry and approximate exit path using archived market data and candidate runtime configs.",
+  "status": {
+    "market_data_fixtures_fetched": true,
+    "orders_fixture_available": false
+  },
+  "runtime_assumptions": {
+    "single_position": true,
+    "reentry_cooldown_min": 10
+  },
+  "notes": [
+    "BigQuery market-data partitions exist for the full window.",
+    "The orders table is currently empty, so the original lifecycle row is unavailable.",
+    "Replay enforces one open position at a time and a post-exit cooldown to better match live runtime behavior.",
+    "Use replay_strategy_case.py with one of the candidate config snapshots below."
+  ],
+  "candidate_configs": [
+    "configs/config_git_c188278.json",
+    "configs/config_candidate_user_corrected.json",
+    "configs/config_vm_20260418_local.json"
+  ]
+}

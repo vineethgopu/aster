@@ -20,7 +20,7 @@ description: Use when working on the Aster directional mid-frequency strategy, p
 
 ## Entry logic
 
-- `core/strategy.py` evaluates each symbol only on a newly closed 1-minute bar.
+- `core/signals/strategy.py` evaluates each symbol only on a newly closed 1-minute bar.
 - Indicator 1 is directional momentum scaled by realized volatility:
   - long if `ret_bps > k * RS_vol(T)`
   - short if `ret_bps < -k * RS_vol(T)`
@@ -36,8 +36,8 @@ description: Use when working on the Aster directional mid-frequency strategy, p
 ## Runtime controls
 
 - Per-symbol production parameters live in `core/config_current.json`.
-- Global defaults are still exposed through `core/main.py` CLI args and `deploy/gce/env.sample`.
-- If `--order_notional` is unset, `core/main.py` computes:
+- Global defaults are exposed through the live entrypoint `core/main.py`, loaded by `core/runtime/config.py`, and mirrored in `deploy/gce/env.sample`.
+- If `--order_notional` is unset, `core/runtime/loop.py` computes:
   - `start_of_day_balance * (risk_pct / 100) * target_leverage`
 - New entries are blocked by:
   - daily drawdown blocker
@@ -48,7 +48,7 @@ description: Use when working on the Aster directional mid-frequency strategy, p
 
 ## Exit shaping
 
-- `core/main.py` adjusts exit levels before submit.
+- `core/runtime/loop.py` adjusts exit levels before submit.
 - The breakeven floor includes:
   - `2 * taker_fee_bps`
   - estimated opening loss
@@ -60,8 +60,10 @@ description: Use when working on the Aster directional mid-frequency strategy, p
 ## Important files
 
 - `README.md`
-- `core/strategy.py`
+- `core/signals/strategy.py`
 - `core/main.py`
+- `core/runtime/config.py`
+- `core/runtime/loop.py`
 - `core/config_current.json`
 - `backtest/config_grid.json`
 - `backtest/backtest.py`

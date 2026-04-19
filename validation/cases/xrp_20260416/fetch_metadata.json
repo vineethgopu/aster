@@ -1,0 +1,15 @@
+{
+  "symbol": "XRPUSDT",
+  "project": "project-c2ebd65c-60ef-4434-b2f",
+  "dataset": "aster",
+  "date": "2026-04-16",
+  "start_ms": 1776346200000,
+  "end_ms": 1776369600000,
+  "row_counts": {
+    "kline": 19797,
+    "book_ticker": 19797,
+    "mark_price": 19797,
+    "agg_trade_1s": 19797,
+    "depth5": 19797
+  }
+}

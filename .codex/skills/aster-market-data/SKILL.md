@@ -7,7 +7,7 @@ description: Use when working on Aster REST or WebSocket market-data or account-
 
 ## When to use
 
-- Changes in `core/client.py`
+- Changes in `core/exchange/client.py`, `core/exchange/market_data.py`, or `core/exchange/order_tracking.py`
 - Questions about REST bootstrap, WS subscriptions, cache contents, or user-stream health
 - Questions about what market data is logged, uploaded, or used by the strategy
 
@@ -25,7 +25,7 @@ description: Use when working on Aster REST or WebSocket market-data or account-
 - `new_listen_key()`, `renew_listen_key()`, `close_listen_key()` manage the user stream
 - `get_position_risk()` is the signed position fallback and REST reconciliation source
 - `account()` supplies `totalMarginBalance` and `totalMaintMargin`
-- `core/order.py` also uses:
+- `core/execution/order.py` also uses:
   - `new_order(...)`
   - signed `GET /fapi/v1/order`
   - signed `DELETE /fapi/v1/order`
@@ -35,7 +35,7 @@ description: Use when working on Aster REST or WebSocket market-data or account-
 
 ## WebSocket streams
 
-- Public combined streams in `core/client.py`:
+- Public combined streams in `core/exchange/client.py`:
   - `@kline_1m`
   - `@bookTicker`
   - `@markPrice@1s`
@@ -91,13 +91,13 @@ description: Use when working on Aster REST or WebSocket market-data or account-
 
 ## Logging and BigQuery
 
-- `core/logs.py` writes dated CSVs:
+- `core/support/logs.py` writes dated CSVs:
   - `kline`
   - `bookTicker`
   - `markPrice`
   - `aggTrade_1s`
   - `depth5`
-- `orders_YYYYMMDD.csv` is written from `core/main.py` when a trade is finalized
+- `orders_YYYYMMDD.csv` is finalized by `core/runtime/lifecycle.py` and reached from the live entrypoint in `core/main.py`
 - Daily loader: `deploy/gce/bq_load_logs.py`
 - Current backtest feature builder reads only:
   - `kline`
