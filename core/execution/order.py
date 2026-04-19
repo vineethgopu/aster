@@ -16,6 +16,8 @@ from aster.error import ClientError
 # ----------------------------
 
 TERMINAL_ORDER_STATUSES = {"FILLED", "CANCELED", "CANCELLED", "REJECTED", "EXPIRED"}
+TRAILING_CALLBACK_RATE_MIN_PCT = 0.1
+TRAILING_CALLBACK_RATE_MAX_PCT = 5.0
 
 def _safe_float(x: Any) -> Optional[float]:
     try:
@@ -238,6 +240,22 @@ class OrderPlacer:
             raise ValueError(f"Computed qty {qty} exceeds maxQty {max_qty} for {symbol}")
         return float(qty)
 
+    def _callback_bps_to_api_rate_pct(self, symbol: str, callback_bps: float) -> float:
+        callback_rate_pct = float(callback_bps) / 100.0
+        if callback_rate_pct < TRAILING_CALLBACK_RATE_MIN_PCT:
+            self.log.warning(
+                f"[TRAILING_STOP] {symbol} callback_bps={callback_bps:.4f} below exchange minimum; "
+                f"clamping callbackRate to {TRAILING_CALLBACK_RATE_MIN_PCT:.4f}"
+            )
+            return TRAILING_CALLBACK_RATE_MIN_PCT
+        if callback_rate_pct > TRAILING_CALLBACK_RATE_MAX_PCT:
+            self.log.warning(
+                f"[TRAILING_STOP] {symbol} callback_bps={callback_bps:.4f} above exchange maximum; "
+                f"clamping callbackRate to {TRAILING_CALLBACK_RATE_MAX_PCT:.4f}"
+            )
+            return TRAILING_CALLBACK_RATE_MAX_PCT
+        return callback_rate_pct
+
     # ----------------------------
     # Public API: Entry (TAKER-ONLY)
     # ----------------------------
@@ -253,7 +271,7 @@ class OrderPlacer:
         stop_loss_bps: Optional[float] = None,
         trailing_activation_bps: Optional[float] = None,
         trailing_activation_price: Optional[float] = None,
-        trailing_callback_rate: Optional[float] = None,
+        trailing_callback_bps: Optional[float] = None,
         exit_trigger_extra: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Optional[PositionState], EntryResult]:
         """
@@ -376,7 +394,7 @@ class OrderPlacer:
                 stop_loss_bps=stop_loss_bps,
                 trailing_activation_bps=trailing_activation_bps,
                 trailing_activation_price=trailing_activation_price,
-                trailing_callback_rate=trailing_callback_rate,
+                trailing_callback_bps=trailing_callback_bps,
                 extra=(exit_trigger_extra or {}),
             )
             pos.take_profit_order_id = trigger_resp.get("take_profit_order_id")
@@ -402,7 +420,8 @@ class OrderPlacer:
                 "take_profit_price": trigger_resp.get("take_profit_stop_price"),
                 "stop_loss_mark_price": trigger_resp.get("stop_loss_stop_price"),
                 "trailing_activation_price": trigger_resp.get("trailing_activation_price"),
-                "trailing_callback_rate": trigger_resp.get("trailing_callback_rate"),
+                "trailing_callback_bps": trigger_resp.get("trailing_callback_bps"),
+                "trailing_callback_rate_pct": trigger_resp.get("trailing_callback_rate_pct"),
             },
         )
         return pos, res
@@ -431,7 +450,7 @@ class OrderPlacer:
         stop_loss_bps: float,
         trailing_activation_bps: Optional[float] = None,
         trailing_activation_price: Optional[float] = None,
-        trailing_callback_rate: Optional[float] = None,
+        trailing_callback_bps: Optional[float] = None,
         extra: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -462,11 +481,12 @@ class OrderPlacer:
             else:
                 trailing_activation_price = entry_px * (1.0 - act_frac)
         trailing_activation_price = self._round_price(pos.symbol, trailing_activation_price, mode="down")
-        if trailing_callback_rate is None:
-            # As requested: (activation - execution) / execution (absolute).
-            trailing_callback_rate = abs((trailing_activation_price - entry_px) / entry_px)
-        if trailing_callback_rate <= 0:
-            trailing_callback_rate = 0.0001
+        if trailing_callback_bps is None:
+            trailing_callback_bps = 1e4 * abs((trailing_activation_price - entry_px) / entry_px)
+        trailing_callback_rate_pct = self._callback_bps_to_api_rate_pct(
+            pos.symbol,
+            trailing_callback_bps,
+        )
 
         common_extra = dict(extra or {})
         common_extra.setdefault("reduceOnly", True)
@@ -478,13 +498,17 @@ class OrderPlacer:
         sl_extra = dict(common_extra)
         sl_extra.setdefault("workingType", "MARK_PRICE")
         tsl_extra = dict(common_extra)
+        tsl_extra.pop("priceProtect", None)
+        tsl_extra["workingType"] = "CONTRACT_PRICE"
 
         self.log.info(
             (
                 f"[EXIT_ARM] {pos.symbol} side={close_side} qty={pos.qty} "
                 f"tp_stop={tp_stop_price} (CONTRACT_PRICE), "
                 f"sl_stop={sl_stop_price} (MARK_PRICE), "
-                f"trail_activation={trailing_activation_price}, trail_callback={trailing_callback_rate}"
+                f"trail_activation={trailing_activation_price} (CONTRACT_PRICE), "
+                f"trail_callback_bps={trailing_callback_bps}, "
+                f"trail_callback_rate_pct={trailing_callback_rate_pct}"
             )
         )
 
@@ -512,7 +536,7 @@ class OrderPlacer:
             extra={
                 **tsl_extra,
                 "activationPrice": trailing_activation_price,
-                "callbackRate": trailing_callback_rate,
+                "callbackRate": trailing_callback_rate_pct,
             },
         )
 
@@ -523,7 +547,8 @@ class OrderPlacer:
             "take_profit_stop_price": tp_stop_price,
             "stop_loss_stop_price": sl_stop_price,
             "trailing_activation_price": trailing_activation_price,
-            "trailing_callback_rate": trailing_callback_rate,
+            "trailing_callback_bps": trailing_callback_bps,
+            "trailing_callback_rate_pct": trailing_callback_rate_pct,
             "tp_raw": tp_resp,
             "sl_raw": sl_resp,
             "tsl_raw": tsl_resp,

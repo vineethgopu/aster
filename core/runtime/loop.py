@@ -213,7 +213,7 @@ def run_live_runtime(
                                     take_profit_bps=float(pending.get("tp_bps") or 0.0),
                                     stop_loss_bps=float(pending.get("sl_bps") or 0.0),
                                     trailing_activation_bps=float(pending.get("activation_bps") or 0.0),
-                                    trailing_callback_rate=float(pending.get("trailing_callback_rate") or 0.0),
+                                    trailing_callback_bps=float(pending.get("trailing_callback_bps") or 0.0),
                                 )
                                 recovered_pos.take_profit_order_id = trigger_resp.get("take_profit_order_id")
                                 recovered_pos.stop_loss_order_id = trigger_resp.get("stop_loss_order_id")
@@ -549,7 +549,7 @@ def run_live_runtime(
                 activation_bps = max(sym_cfg["activation_bps"], activation_auto_bps)
                 tp_bps = max(sym_cfg["tp_bps"], activation_bps + max(0.0, sym_cfg["min_tp_gap_bps"]))
                 sl_bps = sym_cfg["sl_bps"]
-                trailing_callback_rate = sym_cfg["callback_bps"] / 1e4
+                trailing_callback_bps = sym_cfg["callback_bps"]
 
                 entry_limit_price = order_placer.get_entry_limit_price(sym, side, client)
                 if entry_limit_price is None:
@@ -581,7 +581,7 @@ def run_live_runtime(
                     take_profit_bps=tp_bps,
                     stop_loss_bps=sl_bps,
                     trailing_activation_bps=activation_bps,
-                    trailing_callback_rate=trailing_callback_rate,
+                    trailing_callback_bps=trailing_callback_bps,
                 )
                 print(f"[ENTRY] {sym} {entry_res}")
                 entry_order_id = entry_res.taker_order_id
@@ -619,7 +619,8 @@ def run_live_runtime(
                             f"take_profit_price={entry_res.raw.get('take_profit_price')} "
                             f"stop_loss_mark_price={entry_res.raw.get('stop_loss_mark_price')} "
                             f"trailing_activation_price={entry_res.raw.get('trailing_activation_price')} "
-                            f"trailing_callback_rate={entry_res.raw.get('trailing_callback_rate')} "
+                            f"trailing_callback_bps={entry_res.raw.get('trailing_callback_bps')} "
+                            f"trailing_callback_rate_pct={entry_res.raw.get('trailing_callback_rate_pct')} "
                             f"be_floor_bps={be_floor_bps:.4f} "
                             f"activation_bps={activation_bps:.4f} "
                             f"take_profit_bps={tp_bps:.4f} "
@@ -639,7 +640,7 @@ def run_live_runtime(
                             "tp_bps": tp_bps,
                             "sl_bps": sl_bps,
                             "activation_bps": activation_bps,
-                            "trailing_callback_rate": trailing_callback_rate,
+                            "trailing_callback_bps": trailing_callback_bps,
                         }
                         print(f"[ENTRY_PENDING] {sym} order_id={pending_order_id} awaiting WS fill/position update.")
                     else:
