@@ -1,0 +1,65 @@
+{
+  "strategy_mode": "cross_sectional_momentum",
+  "cross_sectional_momentum": {
+    "enable_trading": false,
+    "notes": "Research/live-candidate config. Do not enable until portfolio rebalance runtime is wired and validated.",
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT",
+      "XRPUSDT",
+      "BNBUSDT",
+      "HYPEUSDT"
+    ],
+    "bar_minutes": 240,
+    "short_ema_windows": [
+      8,
+      16,
+      32
+    ],
+    "long_ema_windows": [
+      24,
+      48,
+      96
+    ],
+    "short_vol_window": 6,
+    "long_signal_vol_window": 42,
+    "leg_count": 3,
+    "min_signal_abs": 0.0,
+    "min_rebalance_weight_delta": 0.05,
+    "target_gross_exposure": 1.0,
+    "max_symbol_weight": 0.1666667,
+    "weighting": "equal",
+    "vol_window_bars": 42,
+    "max_spread_bps": 3.0,
+    "max_funding_abs_bps": 2.0,
+    "min_delta_notional_usd": 10.0
+  },
+  "portfolio_runtime": {
+    "source_bar": "1m_closed_kline",
+    "rebalance_offset_seconds": 5,
+    "position_reconcile_before_rebalance": true,
+    "order_type": "IOC_LIMIT_AT_TOUCH",
+    "target_leverage": 3,
+    "margin_type": "ISOLATED",
+    "dry_run_equity_usd": 850.0,
+    "use_bracket_exits": false,
+    "routine_daily_flatten": false,
+    "entry_halt_utc": null,
+    "force_exit_utc": null,
+    "daily_drawdown_blocker_pct": 5.0,
+    "margin_safety_multiple": 1.2,
+    "max_turnover_per_rebalance": 2.0,
+    "taker_fee_bps": 4.0,
+    "slippage_bps_assumption": 0.0
+  },
+  "reporting": {
+    "report_window": "previous_utc_day",
+    "include_position_daily_returns": true,
+    "include_portfolio_return": true,
+    "include_exposure": true,
+    "include_fees_and_funding": true,
+    "include_realized_volatility": true,
+    "include_pairwise_correlation": true
+  }
+}
