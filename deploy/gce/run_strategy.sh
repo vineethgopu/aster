@@ -12,18 +12,27 @@ if [[ -f "$ENV_FILE" ]]; then
   source "$ENV_FILE"
 fi
 
-# Fetch fresh secret material on each start/restart.
-# This allows secret rotation without rebuilding the image.
-"$APP_DIR/deploy/gce/fetch_secrets.sh"
+FETCH_SECRETS_NORM="$(printf '%s' "${ASTER_FETCH_SECRETS:-true}" | tr '[:upper:]' '[:lower:]')"
+if [[ "$FETCH_SECRETS_NORM" == "true" ]]; then
+  # Fetch fresh secret material on each start/restart.
+  # This allows secret rotation without rebuilding the image.
+  "$APP_DIR/deploy/gce/fetch_secrets.sh"
+else
+  echo "[RUN_STRATEGY] ASTER_FETCH_SECRETS=false; skipping Secret Manager fetch."
+fi
 
-# core/main.py expects ORDER_API_KEY and ORDER_SECRET_KEY to be file paths.
+# Runtime entrypoints expect ORDER_API_KEY and ORDER_SECRET_KEY to be file paths
+# when trading is enabled.
 export ORDER_API_KEY="${ASTER_SECRET_DIR:-/opt/aster/.secrets}/api_key"
 export ORDER_SECRET_KEY="${ASTER_SECRET_DIR:-/opt/aster/.secrets}/api_secret"
 
-# Fail fast if secret fetch did not produce files.
-if [[ ! -f "$ORDER_API_KEY" || ! -f "$ORDER_SECRET_KEY" ]]; then
-  echo "Missing secret files."
-  exit 1
+ENABLE_TRADING_NORM="$(printf '%s' "${ASTER_ENABLE_TRADING:-false}" | tr '[:upper:]' '[:lower:]')"
+if [[ "$ENABLE_TRADING_NORM" == "true" ]]; then
+  # Fail fast if secret fetch did not produce files for live trading.
+  if [[ ! -f "$ORDER_API_KEY" || ! -f "$ORDER_SECRET_KEY" ]]; then
+    echo "Missing secret files."
+    exit 1
+  fi
 fi
 
 # Activate project-local venv and run from /core so local imports resolve.
@@ -31,7 +40,29 @@ fi
 source "$APP_DIR/.venv/bin/activate"
 cd "$APP_DIR/core"
 
-# Build command dynamically:
+STRATEGY_MODE="$(printf '%s' "${ASTER_STRATEGY_MODE:-legacy}" | tr '[:upper:]' '[:lower:]')"
+
+if [[ "$STRATEGY_MODE" == "portfolio" || "$STRATEGY_MODE" == "cross_sectional_momentum" ]]; then
+  CMD=(python portfolio_main.py \
+    --config_file "${ASTER_PORTFOLIO_CONFIG_FILE:-/opt/aster/core/config_cross_sectional_momentum.json}" \
+    --poll_time "${ASTER_POLL_TIME:-600}" \
+    --log_dir "${ASTER_LOG_DIR:-/opt/aster/logs}" \
+    --delete_logs "${ASTER_DELETE_LOGS:-false}" \
+    --update_logs "${ASTER_UPDATE_LOGS:-true}" \
+    --enable_trading "${ASTER_ENABLE_TRADING:-false}")
+
+  if [[ -n "${ASTER_TARGET_LEVERAGE:-}" ]]; then
+    CMD+=(--target_leverage "${ASTER_TARGET_LEVERAGE}")
+  fi
+  if [[ -n "${ASTER_MARGIN_TYPE:-}" ]]; then
+    CMD+=(--margin_type "${ASTER_MARGIN_TYPE}")
+  fi
+
+  echo "[RUN_STRATEGY] strategy_mode=portfolio cmd=${CMD[*]}"
+  exec "${CMD[@]}"
+fi
+
+# Build legacy command dynamically:
 # - order_notional is optional: if omitted, main.py computes default from
 #   start-of-day balance * risk_pct * leverage.
 CMD=(python main.py \

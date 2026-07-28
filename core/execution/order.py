@@ -91,6 +91,22 @@ class ExitResult:
     raw: Dict[str, Any]
 
 
+@dataclass
+class RebalanceResult:
+    ok: bool
+    symbol: str
+    target_qty: float
+    current_qty: float
+    delta_qty: float
+    side: Optional[str]
+    filled_qty: float
+    vwap_fill_px: Optional[float]
+    order_id: Optional[int]
+    reduce_only: bool
+    notes: str
+    raw: Dict[str, Any]
+
+
 # ----------------------------
 # Order placer
 # ----------------------------
@@ -239,6 +255,182 @@ class OrderPlacer:
         if max_qty is not None and qty > max_qty:
             raise ValueError(f"Computed qty {qty} exceeds maxQty {max_qty} for {symbol}")
         return float(qty)
+
+    def compute_qty_for_target_notional(
+        self,
+        symbol: str,
+        price: float,
+        target_notional_usd: float,
+    ) -> float:
+        if price <= 0:
+            raise ValueError("price must be > 0")
+        raw_qty = abs(float(target_notional_usd)) / price
+        if raw_qty <= 0:
+            return 0.0
+
+        filters = self._get_symbol_filters(symbol)
+        qty = self._round_qty(symbol, raw_qty, mode="down")
+        min_qty = filters.get("minQty")
+        min_notional = filters.get("minNotional")
+        if min_qty is not None and 0 < qty < min_qty:
+            return 0.0
+        if min_notional is not None and 0 < qty * price < min_notional:
+            return 0.0
+        return float(qty)
+
+    def rebalance_delta(
+        self,
+        symbol: str,
+        current_signed_qty: float,
+        target_signed_qty: float,
+        price_source: Any,
+        min_delta_notional_usd: float = 0.0,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> RebalanceResult:
+        """
+        Move a symbol toward a signed target quantity with one IOC LIMIT delta.
+
+        Positive signed quantity means long, negative means short. This method is
+        intended for portfolio rebalancing and does not arm TP/SL/trailing exits.
+        It uses reduceOnly only when the delta strictly reduces same-direction
+        exposure without crossing through flat.
+        """
+        extra = dict(extra or {})
+        symbol = symbol.upper().strip()
+        current_signed_qty = float(current_signed_qty or 0.0)
+        target_signed_qty = float(target_signed_qty or 0.0)
+        raw_delta = target_signed_qty - current_signed_qty
+        if abs(raw_delta) <= 0:
+            return RebalanceResult(
+                ok=True,
+                symbol=symbol,
+                target_qty=target_signed_qty,
+                current_qty=current_signed_qty,
+                delta_qty=0.0,
+                side=None,
+                filled_qty=0.0,
+                vwap_fill_px=None,
+                order_id=None,
+                reduce_only=False,
+                notes="No rebalance needed.",
+                raw={},
+            )
+
+        side = "BUY" if raw_delta > 0 else "SELL"
+        bid_px, ask_px = self._get_touch(symbol, price_source)
+        if bid_px is None or ask_px is None:
+            return RebalanceResult(
+                ok=False,
+                symbol=symbol,
+                target_qty=target_signed_qty,
+                current_qty=current_signed_qty,
+                delta_qty=0.0,
+                side=side,
+                filled_qty=0.0,
+                vwap_fill_px=None,
+                order_id=None,
+                reduce_only=False,
+                notes="No BBO available for rebalance.",
+                raw={"bid_px": bid_px, "ask_px": ask_px},
+            )
+
+        raw_price = ask_px if side == "BUY" else bid_px
+        if min_delta_notional_usd > 0 and abs(raw_delta) * raw_price < min_delta_notional_usd:
+            return RebalanceResult(
+                ok=True,
+                symbol=symbol,
+                target_qty=target_signed_qty,
+                current_qty=current_signed_qty,
+                delta_qty=0.0,
+                side=None,
+                filled_qty=0.0,
+                vwap_fill_px=None,
+                order_id=None,
+                reduce_only=False,
+                notes="Delta below min_delta_notional_usd.",
+                raw={"raw_delta_qty": raw_delta, "raw_price": raw_price},
+            )
+
+        qty = self._round_qty(symbol, abs(raw_delta), mode="down")
+        if qty <= 0:
+            return RebalanceResult(
+                ok=True,
+                symbol=symbol,
+                target_qty=target_signed_qty,
+                current_qty=current_signed_qty,
+                delta_qty=0.0,
+                side=None,
+                filled_qty=0.0,
+                vwap_fill_px=None,
+                order_id=None,
+                reduce_only=False,
+                notes="Rounded delta quantity is zero.",
+                raw={"raw_delta_qty": raw_delta},
+            )
+
+        reducing_same_direction = (
+            (current_signed_qty > 0 and target_signed_qty >= 0 and target_signed_qty < current_signed_qty)
+            or (current_signed_qty < 0 and target_signed_qty <= 0 and target_signed_qty > current_signed_qty)
+        )
+        reduce_only = bool(reducing_same_direction)
+        if reduce_only:
+            extra.setdefault("reduceOnly", True)
+
+        mode = "up" if side == "BUY" else "down"
+        limit_price = self._round_price(symbol, raw_price, mode=mode)
+        try:
+            resp = self._new_order(
+                symbol=symbol,
+                side=side,
+                type_="LIMIT",
+                quantity=qty,
+                time_in_force="IOC",
+                price=limit_price,
+                extra=extra,
+            )
+        except ClientError as e:
+            return RebalanceResult(
+                ok=False,
+                symbol=symbol,
+                target_qty=target_signed_qty,
+                current_qty=current_signed_qty,
+                delta_qty=0.0,
+                side=side,
+                filled_qty=0.0,
+                vwap_fill_px=None,
+                order_id=None,
+                reduce_only=reduce_only,
+                notes=f"Rebalance IOC rejected: {getattr(e,'error_message',str(e))}",
+                raw={"error": str(e)},
+            )
+
+        order_id = self._extract_order_id(resp)
+        confirm: Dict[str, Any] = {}
+        if order_id is not None:
+            confirm = self._confirm_order_fill(symbol=symbol, order_id=order_id, timeout_ms=1500)
+        filled_qty = float(confirm.get("filled_qty") or 0.0)
+        avg_px = _safe_float(confirm.get("avg_px"))
+        signed_filled = filled_qty if side == "BUY" else -filled_qty
+        return RebalanceResult(
+            ok=filled_qty > 0 and avg_px is not None and avg_px > 0,
+            symbol=symbol,
+            target_qty=target_signed_qty,
+            current_qty=current_signed_qty,
+            delta_qty=signed_filled,
+            side=side,
+            filled_qty=filled_qty,
+            vwap_fill_px=avg_px,
+            order_id=order_id,
+            reduce_only=reduce_only,
+            notes="Rebalance IOC filled." if filled_qty > 0 else "Rebalance IOC had no fill.",
+            raw={
+                "new_order": resp,
+                "confirm": confirm,
+                "limit_price": limit_price,
+                "requested_delta_qty": raw_delta,
+                "requested_qty": qty,
+            },
+        )
 
     def _callback_bps_to_api_rate_pct(self, symbol: str, callback_bps: float) -> float:
         callback_rate_pct = float(callback_bps) / 100.0

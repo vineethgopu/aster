@@ -4,6 +4,12 @@ set -euo pipefail
 ASTER_SERVICE="${ASTER_SERVICE:-aster.service}"
 DAILY_STOP_TIMER="${DAILY_STOP_TIMER:-aster-daily-stop.timer}"
 DAILY_RESTART_TIMER="${DAILY_RESTART_TIMER:-aster-daily-restart.timer}"
+ENV_FILE="${ENV_FILE:-/opt/aster/deploy/gce/aster.env}"
+
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+fi
 
 usage() {
   cat <<'EOF'
@@ -48,7 +54,14 @@ on() {
   require_root
   systemctl daemon-reload
   systemctl enable --now "$ASTER_SERVICE"
-  systemctl enable --now "$DAILY_STOP_TIMER" "$DAILY_RESTART_TIMER"
+  local daily_timers_enabled
+  daily_timers_enabled="$(printf '%s' "${ASTER_ENABLE_DAILY_TIMERS:-true}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$daily_timers_enabled" == "true" ]]; then
+    systemctl enable --now "$DAILY_STOP_TIMER" "$DAILY_RESTART_TIMER"
+  else
+    systemctl disable --now "$DAILY_STOP_TIMER" "$DAILY_RESTART_TIMER" || true
+    echo "[TOGGLE_PRODUCTION] Daily stop/restart timers disabled by ASTER_ENABLE_DAILY_TIMERS=false."
+  fi
   echo "[TOGGLE_PRODUCTION] Production mode enabled."
   status
 }
